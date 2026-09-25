@@ -1,0 +1,36 @@
+# Smoke test on a procedurally generated sequence: no download needed.
+# Run: uv run vobench run configs/synthetic.yaml
+output_dir: results  # Results go to results/<dataset tag>/<matcher>/.
+max_frames: null  # null = process every frame.
+
+dataset:
+  name: synthetic  # Built-in textured-plane sequence with exact ground truth.
+  params:
+    num_frames: 60  # Sequence length.
+
+matcher:
+  name: orb  # Front end under test; override with --matcher sift.
+  params:
+    max_keypoints: 2000  # Keypoint budget, kept equal across extractors.
+    ratio: 0.8  # Lowe ratio-test threshold.
+    mutual_check: true  # Keep only mutual nearest neighbours.
+
+depth:
+  name: sgbm  # Fixed stereo depth source.
+  params:
+    num_disparities: 32  # fx*B = 54 px*m, so this covers depths down to ~1.7 m.
+    block_size: 5  # Matching window.
+    min_depth: 0.5  # Ignore anything closer (metres).
+    max_depth: 20.0  # Ignore anything farther (metres).
+
+odometry:
+  essential_threshold_px: 1.0  # Inlier threshold for the front-end quality metric.
+  pnp:
+    reprojection_error_px: 2.0  # PnP RANSAC inlier threshold.
+    iterations: 200  # PnP RANSAC iterations.
+    min_inliers: 15  # Below this, the frame counts as a tracking failure.
+  keyframe:
+    min_inliers: 100  # New keyframe when inliers drop below this.
+    max_translation_m: 0.5  # ...or after this much motion.
+    max_rotation_deg: 10.0  # ...or this much rotation.
+    max_frames: 20  # ...or this many frames.

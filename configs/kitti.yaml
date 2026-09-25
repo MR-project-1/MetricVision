@@ -1,0 +1,37 @@
+# KITTI odometry (outdoor driving, ~1241x376 grayscale stereo at 10 Hz).
+# Run: uv run metricvision run configs/kitti.yaml --dataset-root /data/kitti
+output_dir: results  # Results go to results/<dataset tag>/<matcher>/.
+max_frames: null  # null = process every frame.
+
+dataset:
+  name: kitti  # KITTI odometry loader (images are pre-rectified).
+  params:
+    root: /data/kitti  # Folder containing sequences/ and poses/.
+    sequence: "00"  # Sequence number; 00-10 have public ground truth.
+
+matcher:
+  name: orb  # Front end under test; override with --matcher sift.
+  params:
+    max_keypoints: 2000  # Keypoint budget, kept equal across extractors.
+    ratio: 0.8  # Lowe ratio-test threshold.
+    mutual_check: true  # Keep only mutual nearest neighbours.
+
+depth:
+  name: sgbm  # Fixed stereo depth source.
+  params:
+    num_disparities: 128  # fx*B is about 388 px*m, so this covers depths down to ~3 m.
+    block_size: 5  # Matching window.
+    min_depth: 3.0  # Matches the disparity range above.
+    max_depth: 40.0  # Far points constrain translation poorly; tune per dataset.
+
+odometry:
+  essential_threshold_px: 1.0  # Inlier threshold for the front-end quality metric.
+  pnp:
+    reprojection_error_px: 2.0  # PnP RANSAC inlier threshold.
+    iterations: 200  # PnP RANSAC iterations.
+    min_inliers: 15  # Below this, the frame counts as a tracking failure.
+  keyframe:
+    min_inliers: 100  # New keyframe when inliers drop below this.
+    max_translation_m: 3.0  # ...or after this much motion (car scale, ~1 m per frame).
+    max_rotation_deg: 10.0  # ...or this much rotation.
+    max_frames: 10  # ...or this many frames (1 s at 10 Hz).

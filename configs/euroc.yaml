@@ -1,0 +1,36 @@
+# EuRoC MAV (indoor drone, 752x480 global-shutter grayscale stereo at 20 Hz).
+# Run: uv run metricvision run configs/euroc.yaml --dataset-root /data/euroc/MH_01_easy
+output_dir: results  # Results go to results/<dataset tag>/<matcher>/.
+max_frames: null  # null = process every frame.
+
+dataset:
+  name: euroc  # Loader that rectifies the raw EuRoC images.
+  params:
+    root: /data/euroc/MH_01_easy  # Sequence folder (containing mav0/).
+
+matcher:
+  name: orb  # Front end under test; override with --matcher sift.
+  params:
+    max_keypoints: 2000  # Keypoint budget, kept equal across extractors.
+    ratio: 0.8  # Lowe ratio-test threshold.
+    mutual_check: true  # Keep only mutual nearest neighbours.
+
+depth:
+  name: sgbm  # Fixed stereo depth source.
+  params:
+    num_disparities: 96  # fx*B is about 48 px*m, so this covers depths down to ~0.5 m.
+    block_size: 5  # Matching window.
+    min_depth: 0.5  # Ignore anything closer (metres).
+    max_depth: 20.0  # Machine hall and Vicon room are well within this.
+
+odometry:
+  essential_threshold_px: 1.0  # Inlier threshold for the front-end quality metric.
+  pnp:
+    reprojection_error_px: 2.0  # PnP RANSAC inlier threshold.
+    iterations: 200  # PnP RANSAC iterations.
+    min_inliers: 15  # Below this, the frame counts as a tracking failure.
+  keyframe:
+    min_inliers: 100  # New keyframe when inliers drop below this.
+    max_translation_m: 0.5  # ...or after this much motion (indoor scale).
+    max_rotation_deg: 10.0  # ...or this much rotation (drones rotate quickly).
+    max_frames: 20  # ...or this many frames (1 s at 20 Hz).
