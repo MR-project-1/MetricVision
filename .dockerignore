@@ -1,0 +1,5 @@
+# Keep build contexts small: never send environments, results or datasets to Docker.
+.venv/
+results/
+data/
+.git/

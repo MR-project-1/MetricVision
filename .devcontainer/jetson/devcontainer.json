@@ -1,0 +1,35 @@
+// Dev container for the Jetson AGX Orin on the robot.
+// From the laptop: "Remote-SSH: Connect to Host" (the Jetson), open the cloned repo,
+// then "Dev Containers: Reopen in Container" and pick "vobench (Jetson AGX)".
+{
+  "name": "vobench (Jetson AGX)",  // Name shown in the VS Code picker.
+  "build": {
+    "dockerfile": "Dockerfile",  // Jetson image defined next to this file.
+    "context": "../..",  // Build from the repository root.
+    "args": { "L4T_TAG": "r36.4.0" }  // Change to match /etc/nv_tegra_release on the device.
+  },
+  "runArgs": [
+    "--runtime=nvidia",  // Jetson GPU access goes through the NVIDIA runtime (not --gpus).
+    "--ipc=host",  // Larger shared memory for PyTorch later.
+    "--network=host",  // ROS 2 discovery and topics work as on the host.
+    "--privileged",  // Direct USB access for the RealSense D455 (lab robot only; not for shared machines).
+    "-v", "/dev:/dev"  // Make hot-plugged devices (camera) visible inside the container.
+  ],
+  "initializeCommand": "mkdir -p ${localEnv:HOME}/datasets",  // Runs on the Jetson host so the mount exists.
+  "mounts": [
+    "source=${localEnv:HOME}/datasets,target=/data,type=bind",  // Datasets and recorded rosbags (keep on the NVMe drive).
+    "source=vobench-uv-cache,target=/root/.cache/uv,type=volume"  // Persist uv's download cache across rebuilds.
+  ],
+  "postCreateCommand": "uv sync --all-groups",  // Create /opt/venv from the same uv.lock as the laptop.
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",  // Python language support.
+        "charliermarsh.ruff"  // Linting and formatting (mypy extension omitted to save RAM on the robot).
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "/opt/venv/bin/python"  // Use the uv-managed environment.
+      }
+    }
+  }
+}
