@@ -35,4 +35,4 @@ ENV UV_PYTHON_PREFERENCE=only-system \
 ENV PATH="/opt/venv/bin:${PATH}"
 
 # Default working directory; the devcontainer mounts the repository here.
-WORKDIR /workspaces/vobench
+WORKDIR /workspaces/metricvision

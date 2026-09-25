@@ -2,7 +2,7 @@
 // From the laptop: "Remote-SSH: Connect to Host" (the Jetson), open the cloned repo,
 // then "Dev Containers: Reopen in Container" and pick "vobench (Jetson AGX)".
 {
-  "name": "vobench (Jetson AGX)",  // Name shown in the VS Code picker.
+  "name": "metricvision (Jetson AGX)",  // Name shown in the VS Code picker.
   "build": {
     "dockerfile": "Dockerfile",  // Jetson image defined next to this file.
     "context": "../..",  // Build from the repository root.
