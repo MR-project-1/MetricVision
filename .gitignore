@@ -9,3 +9,5 @@ __pycache__/
 # Experiment outputs and local datasets.
 results/
 data/
+docs/
+CLAUDE.md

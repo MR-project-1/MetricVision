@@ -23,8 +23,8 @@ from typing import Any, ClassVar  # Loosely typed OpenCV objects and class-level
 import cv2  # Brute-force descriptor matching.
 import numpy as np  # Array construction.
 
-from vobench.core.registry import Registry  # Name -> class lookup for configs.
-from vobench.core.types import Correspondences, Features, ImageArray, ImageView  # Shared types.
+from metricvision.core.registry import Registry  # Name -> class lookup for configs.
+from metricvision.core.types import Correspondences, Features, ImageArray, ImageView  # Shared types.
 
 
 class FeatureMatcher(ABC):

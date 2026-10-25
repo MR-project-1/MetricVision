@@ -1,8 +1,12 @@
-from __future__ import annotations 
+from __future__ import annotations
+
 from dataclasses import dataclass  # Config container.
-import numpy as np  
+
+import numpy as np
+
 from metricvision.core.geometry import rotation_angle_deg  # Rotation magnitude.
 from metricvision.core.types import FloatArray  # Shared types.
+
 
 @dataclass(frozen=True)
 class KeyframeConfig:
@@ -19,7 +23,8 @@ class KeyframeConfig:
     max_translation_m: float = 1.0  # Distance trigger.
     max_rotation_deg: float = 15.0  # Rotation trigger.
     max_frames: int = 20  # Age trigger.
-    
+
+
 class KeyframePolicy:
     """Decides when the current frame should replace the keyframe."""
 
@@ -30,7 +35,7 @@ class KeyframePolicy:
             config: Keyframe thresholds; defaults are used when omitted.
         """
         self._config = config or KeyframeConfig()  # Fall back to defaults.
-        
+
     def should_insert(self, keyframe_from_current: FloatArray, num_inliers: int, frames_since_keyframe: int) -> bool:
         """Return True if a new keyframe should be created at the current frame.
 

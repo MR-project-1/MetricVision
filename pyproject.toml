@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.scripts]
-vobench = "vobench.cli:main"  # Installs a `vobench` command that calls vobench.cli.main().
+metricvision = "metricvision.cli:main"  # Installs a `metricvision` command that calls metricvision.cli.main().
 
 [dependency-groups]
 dev = [
@@ -30,7 +30,7 @@ requires = ["hatchling"]  # Lightweight build backend used by uv to install the 
 build-backend = "hatchling.build"  # Entry point of the build backend.
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/vobench"]  # Source layout: the importable package lives under src/.
+packages = ["src/metricvision"]  # Source layout: the importable package lives under src/.
 
 [tool.ruff]
 line-length = 150  # Generous limit: code lines carry trailing explanatory comments.

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import cv2  
+import cv2
 import numpy as np
 from scipy.spatial.transform import Rotation  # Robust quaternion conversions.
 
 from metricvision.core.types import FloatArray  # Shared array alias.
+
 
 def make_pose(rotation: FloatArray, translation: FloatArray) -> FloatArray:
     """Assemble a 4x4 homogeneous transform from a rotation and a translation.
@@ -23,6 +24,7 @@ def make_pose(rotation: FloatArray, translation: FloatArray) -> FloatArray:
     pose[:3, 3] = np.asarray(translation, dtype=np.float64).reshape(3)  # Last column is the translation.
     return pose  # Finished transform.
 
+
 def invert_pose(pose: FloatArray) -> FloatArray:
     """Invert a rigid transform using its structure instead of a general matrix inverse.
 
@@ -34,6 +36,7 @@ def invert_pose(pose: FloatArray) -> FloatArray:
     """
     rotation_t = pose[:3, :3].T  # Inverse of a rotation is its transpose.
     return make_pose(rotation_t, -rotation_t @ pose[:3, 3])  # New translation is -R^T t.
+
 
 def pose_from_rvec_tvec(rvec: FloatArray, tvec: FloatArray) -> FloatArray:
     """Convert OpenCV's (rotation vector, translation vector) pair to a 4x4 transform.
@@ -48,6 +51,7 @@ def pose_from_rvec_tvec(rvec: FloatArray, tvec: FloatArray) -> FloatArray:
     rotation, _ = cv2.Rodrigues(np.asarray(rvec, dtype=np.float64).reshape(3, 1))  # Axis-angle to matrix.
     return make_pose(np.asarray(rotation, dtype=np.float64), tvec)  # Combine with the translation.
 
+
 def rvec_tvec_from_pose(pose: FloatArray) -> tuple[FloatArray, FloatArray]:
     """Convert a 4x4 transform to OpenCV's (rotation vector, translation vector) pair.
 
@@ -60,6 +64,7 @@ def rvec_tvec_from_pose(pose: FloatArray) -> tuple[FloatArray, FloatArray]:
     rvec, _ = cv2.Rodrigues(np.ascontiguousarray(pose[:3, :3]))  # Matrix to axis-angle.
     tvec = pose[:3, 3].reshape(3, 1).astype(np.float64)  # Translation as a column vector.
     return rvec.astype(np.float64), tvec  # OpenCV expects float64 column vectors.
+
 
 def rotation_angle_deg(rotation: FloatArray) -> float:
     """Return the magnitude of a rotation in degrees.
@@ -74,6 +79,7 @@ def rotation_angle_deg(rotation: FloatArray) -> float:
     angle = np.arccos(np.clip(cos_angle, -1.0, 1.0))
     return float(np.degrees(angle))  # Clip guards against rounding outside [-1, 1].
 
+
 def quaternion_xyzw_from_rotation(rotation: FloatArray) -> FloatArray:
     """Convert a rotation matrix to a unit quaternion in (x, y, z, w) order (TUM format).
 
@@ -84,6 +90,7 @@ def quaternion_xyzw_from_rotation(rotation: FloatArray) -> FloatArray:
         Quaternion as a float64 array [qx, qy, qz, qw].
     """
     return Rotation.from_matrix(rotation).as_quat()  # SciPy's native order is scalar-last (x, y, z, w).
+
 
 def rotation_from_quaternion_wxyz(quaternion_wxyz: FloatArray) -> FloatArray:
     """Convert a scalar-first quaternion (w, x, y, z), as used by EuRoC, to a rotation matrix.
@@ -96,3 +103,43 @@ def rotation_from_quaternion_wxyz(quaternion_wxyz: FloatArray) -> FloatArray:
     """
     w, x, y, z = (float(v) for v in quaternion_wxyz)  # Unpack scalar-first order.
     return Rotation.from_quat([x, y, z, w]).as_matrix()  # Reorder to SciPy's scalar-last convention.
+
+
+def skew(vector: FloatArray) -> FloatArray:
+    """Return the 3x3 cross-product matrix [v]x, so that [v]x @ w = v x w.
+
+    Args:
+        vector: 3-vector v.
+
+    Returns:
+        Skew-symmetric 3x3 matrix.
+    """
+    x, y, z = (float(v) for v in np.asarray(vector).reshape(3))  # Components.
+    return np.array([[0.0, -z, y], [z, 0.0, -x], [-y, x, 0.0]], dtype=np.float64)  # Standard layout.
+
+
+def se3_exp(xi: FloatArray) -> FloatArray:
+    """Exponential map from a twist xi = (rho, phi) in se(3) to a 4x4 rigid transform.
+
+    Translation-first ordering matches the analytic Jacobians in ``backend/lm.py``.
+
+    Args:
+        xi: 6-vector (rho_x, rho_y, rho_z, phi_x, phi_y, phi_z).
+
+    Returns:
+        exp(xi^) as a 4x4 float64 transform.
+    """
+    xi = np.asarray(xi, dtype=np.float64).reshape(6)  # Flatten.
+    rho, phi = xi[:3], xi[3:]  # Translational and rotational parts.
+    theta = float(np.linalg.norm(phi))  # Rotation angle.
+    phi_hat = skew(phi)  # [phi]x.
+    if theta < 1e-8:  # Small-angle limit: use the Taylor expansion to avoid 0/0.
+        rotation = np.eye(3) + phi_hat  # First-order rotation.
+        v_matrix = np.eye(3) + 0.5 * phi_hat  # First-order left Jacobian.
+    else:  # Closed-form Rodrigues formulas.
+        a = np.sin(theta) / theta  # sin(t)/t.
+        b = (1.0 - np.cos(theta)) / theta**2  # (1-cos t)/t^2.
+        c = (theta - np.sin(theta)) / theta**3  # (t-sin t)/t^3.
+        rotation = np.eye(3) + a * phi_hat + b * phi_hat @ phi_hat  # Rodrigues rotation.
+        v_matrix = np.eye(3) + b * phi_hat + c * phi_hat @ phi_hat  # Left Jacobian of SO(3).
+    return make_pose(rotation, v_matrix @ rho)  # [[R, V rho], [0, 1]].

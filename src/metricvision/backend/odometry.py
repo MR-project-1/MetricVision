@@ -11,6 +11,7 @@ from metricvision.backend.keyframe import KeyframeConfig, KeyframePolicy  # Keyf
 from metricvision.backend.pose import PnPConfig, PnPPoseEstimator  # Robust pose estimation.
 from metricvision.backend.stats import FrameStats  # Per-frame measurements.
 from metricvision.core.geometry import invert_pose  # Rigid inverse.
+from metricvision.core.stereo import triangulation_covariance  # Depth uncertainty for the LM weighting.
 from metricvision.core.types import (  # Shared types.
     BoolArray,
     Float32Array,
@@ -24,6 +25,7 @@ from metricvision.depth.base import DepthEstimator  # Fixed depth source.
 from metricvision.evaluation.frontend_metrics import essential_inlier_ratio  # Front-end-only metric.
 from metricvision.frontend.base import FeatureMatcher  # The component under test.
 
+
 @dataclass(frozen=True)
 class OdometryConfig:
     """Back-end settings. Keep identical across extractors so only the front end varies.
@@ -33,12 +35,23 @@ class OdometryConfig:
         keyframe: Keyframe selection thresholds.
         essential_threshold_px: Inlier threshold for the essential-matrix quality metric.
         compute_essential_inlier_ratio: Whether to compute that metric (adds time, excluded from runtime).
+        stereo_sigma_px: Pixel noise assumed for stereo measurements when propagating 3D point covariance.
+        lm_right_residuals: Sparse pipeline only: include current right-image residuals in the LM (rigid rig) or not (mono).
+        lm_covariance_weighting: Whiten LM residuals with the propagated point covariance (else pixel noise only).
+        sparse_point_anchor: Sparse pipeline only: ``previous`` re-triangulates every track in the previous frame
+            (pure frame-to-frame), ``birth`` keeps each track's 3D point (in world coordinates) from the frame
+            where it was first triangulated, so long tracks constrain many poses without chaining their errors;
+            ``fused`` additionally fuses each new stereo observation into the anchor by inverse covariance.
     """
 
     pnp: PnPConfig = field(default_factory=PnPConfig)  # PnP settings.
     keyframe: KeyframeConfig = field(default_factory=KeyframeConfig)  # Keyframe thresholds.
     essential_threshold_px: float = 1.0  # Metric threshold in pixels.
     compute_essential_inlier_ratio: bool = True  # Metric on/off.
+    stereo_sigma_px: float = 0.5  # Disparity/pixel noise for covariance propagation.
+    lm_right_residuals: bool = True  # Rigid-rig (stereo) residuals on/off.
+    lm_covariance_weighting: bool = True  # Covariance whitening on/off.
+    sparse_point_anchor: str = "previous"  # previous | birth | fused.
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any] | None) -> OdometryConfig:
@@ -226,7 +239,7 @@ class StereoVisualOdometry:
             total_ms=_elapsed_ms(start),  # Timings.
         )
         return TrackingResult(pose, stats)  # Report.
-    
+
     def _lift_to_3d(self, pixels: Float32Array, depth: Float32Array) -> tuple[FloatArray, BoolArray]:
         """Back-project keyframe pixels to 3D points using the depth map.
 
@@ -249,7 +262,7 @@ class StereoVisualOdometry:
         x = (pixels[valid, 0] - self._camera.cx) * z[valid] / self._camera.fx  # Pinhole back-projection, x.
         y = (pixels[valid, 1] - self._camera.cy) * z[valid] / self._camera.fy  # Pinhole back-projection, y.
         return np.column_stack([x, y, z[valid]]), valid  # (M, 3) points plus mask.
-    
+
     def _track(self, frame: StereoFrame) -> TrackingResult:
         """Estimate the pose of a frame relative to the current keyframe.
 
@@ -272,9 +285,17 @@ class StereoVisualOdometry:
         points_3d, valid = self._lift_to_3d(matches.points_a, keyframe.depth)  # 3D points in the keyframe frame.
         predicted_pose = self._last_pose @ self._velocity  # Constant-velocity prediction of T_world_cur.
         prior = invert_pose(predicted_pose) @ keyframe.world_from_camera  # Same prediction as T_cur_kf, the PnP unknown.
-        estimate = self._pose_estimator.estimate(points_3d, matches.points_b[valid].astype(np.float64), self._camera_matrix, prior)  # Robust PnP.
+        covariances = None  # Only the LM refinement uses point covariances.
+        if (
+            self._config.pnp.refine_method == "lm" and self._config.lm_covariance_weighting and len(points_3d) > 0
+        ):  # Recover disparity from SGBM depth and propagate pixel noise.
+            disparity = self._camera.fx * self._camera.baseline / points_3d[:, 2]  # d = fx B / Z.
+            covariances = triangulation_covariance(matches.points_a[valid], disparity, self._camera, self._config.stereo_sigma_px)  # (M, 3, 3).
+        estimate = self._pose_estimator.estimate(  # Robust PnP (+ optional covariance-weighted LM).
+            points_3d, matches.points_b[valid].astype(np.float64), self._camera_matrix, prior, covariances=covariances
+        )
         pose_ms = _elapsed_ms(pose_start)  # Pose time.
-        
+
         if estimate.success:  # PnP found a well-supported pose.
             pose = keyframe.world_from_camera @ invert_pose(estimate.camera_from_reference)  # T_world_cur = T_world_kf @ T_kf_cur.
         else:  # Tracking failure.
@@ -297,7 +318,7 @@ class StereoVisualOdometry:
             if self._config.compute_essential_inlier_ratio  # Only if enabled.
             else float("nan")  # Otherwise undefined.
         )
-        
+
         self._trajectory.append(frame.timestamp, pose)  # Record the pose.
         stats = FrameStats(  # Collect measurements.
             frame_index=frame.index,

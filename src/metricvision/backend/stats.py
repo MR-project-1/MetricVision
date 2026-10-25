@@ -1,7 +1,9 @@
 """Per-frame measurements recorded by the odometry pipeline."""
+
 from __future__ import annotations  # Postponed evaluation of type hints.
 
 from dataclasses import asdict, dataclass  # Record container and dict conversion.
+
 
 @dataclass(frozen=True)
 class FrameStats:

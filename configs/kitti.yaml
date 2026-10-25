@@ -2,6 +2,7 @@
 # Run: uv run metricvision run configs/kitti.yaml --dataset-root /data/kitti
 output_dir: results  # Results go to results/<dataset tag>/<matcher>/.
 max_frames: null  # null = process every frame.
+pipeline: dense  # "dense": matcher + SGBM keyframe VO; "sparse": stereo_frontend + frame-to-frame VO (override with --pipeline).
 
 dataset:
   name: kitti  # KITTI odometry loader (images are pre-rectified).
@@ -16,6 +17,14 @@ matcher:
     ratio: 0.8  # Lowe ratio-test threshold.
     mutual_check: true  # Keep only mutual nearest neighbours.
 
+stereo_frontend:  # Used when pipeline is sparse: FAST + ORB stereo matching, KLT with circular L/R check.
+  name: fast_orb_klt
+  params:
+    max_features: 1500  # Target number of tracked stereo pairs.
+    fast_threshold: 15  # FAST corner threshold.
+    circular_tolerance_px: 1.0  # Closing error allowed in the circular check.
+    epipolar_tolerance_px: 1.5  # Row difference allowed between left and right.
+
 depth:
   name: sgbm  # Fixed stereo depth source.
   params:
@@ -26,10 +35,13 @@ depth:
 
 odometry:
   essential_threshold_px: 1.0  # Inlier threshold for the front-end quality metric.
+  stereo_sigma_px: 0.5  # Pixel/disparity noise for triangulation covariance (weights the LM).
+  sparse_point_anchor: fused  # Sparse only: previous (frame-to-frame) | birth (keep first 3D) | fused (inverse-covariance fusion).
   pnp:
     reprojection_error_px: 2.0  # PnP RANSAC inlier threshold.
     iterations: 200  # PnP RANSAC iterations.
     min_inliers: 15  # Below this, the frame counts as a tracking failure.
+    refine: lm  # none | opencv (cv2.solvePnPRefineLM) | lm (covariance-weighted rigid-rig LM, analytic Jacobians).
   keyframe:
     min_inliers: 100  # New keyframe when inliers drop below this.
     max_translation_m: 3.0  # ...or after this much motion (car scale, ~1 m per frame).

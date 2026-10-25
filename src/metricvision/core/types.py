@@ -20,6 +20,8 @@ FloatArray = npt.NDArray[np.float64]  # Double-precision array (poses, 3D points
 Float32Array = npt.NDArray[np.float32]  # Single-precision array (keypoints, depth maps).
 ImageArray = npt.NDArray[np.uint8]  # 8-bit grayscale image.
 BoolArray = npt.NDArray[np.bool_]  # Boolean mask array.
+RealArray = npt.NDArray[np.floating[Any]]  # Float array of any precision (pixel coordinates from OpenCV or NumPy).
+
 
 @dataclass(frozen=True)
 class StereoCamera:
@@ -58,7 +60,8 @@ class StereoCamera:
             ],
             dtype=np.float64,  # OpenCV geometry functions expect float64.
         )
-        
+
+
 @dataclass(frozen=True)
 class StereoFrame:
     """One synchronised, rectified stereo image pair.
@@ -74,7 +77,8 @@ class StereoFrame:
     timestamp: float  # Capture time in seconds.
     left: ImageArray  # Rectified left image.
     right: ImageArray  # Rectified right image.
-    
+
+
 @dataclass(frozen=True)
 class ImageView:
     """A single image plus a stable identifier: the unit that front ends operate on.
@@ -89,7 +93,8 @@ class ImageView:
 
     frame_id: int  # Unique id of the image within a run.
     image: ImageArray  # Grayscale pixels.
-    
+
+
 @dataclass(frozen=True)
 class Features:
     """Keypoints and descriptors produced by a sparse extractor.
@@ -111,7 +116,8 @@ class Features:
             Number of detected keypoints N.
         """
         return int(self.keypoints.shape[0])  # Row count of the keypoint array.
-    
+
+
 @dataclass(frozen=True)
 class Correspondences:
     """2D-2D matches between an image A and an image B.
@@ -127,7 +133,7 @@ class Correspondences:
     points_a: Float32Array  # (N, 2) points in image A.
     points_b: Float32Array  # (N, 2) points in image B.
     scores: Float32Array  # (N,) confidences.
-    
+
     def __post_init__(self) -> None:
         """Validate that the three arrays describe the same number of matches.
 
@@ -160,7 +166,7 @@ class Correspondences:
         """
         no_points = np.zeros((0, 2), dtype=np.float32)  # Zero rows, two columns.
         return cls(no_points, no_points.copy(), np.zeros((0,), dtype=np.float32))  # Empty but well-formed.
-    
+
     def subset(self, mask: BoolArray) -> Correspondences:
         """Keep only the matches selected by a boolean mask.
 
@@ -171,7 +177,7 @@ class Correspondences:
             A new Correspondences with the selected rows.
         """
         return Correspondences(self.points_a[mask], self.points_b[mask], self.scores[mask])  # Row-wise filtering.
-    
+
     def top_k(self, k: int) -> Correspondences:
         """Keep the ``k`` most confident matches, used to enforce equal match budgets.
 
@@ -185,7 +191,8 @@ class Correspondences:
             return self  # Return unchanged (instances are immutable, so sharing is safe).
         order = np.argsort(-self.scores)[:k]  # Indices of the k highest scores.
         return Correspondences(self.points_a[order], self.points_b[order], self.scores[order])  # Trimmed copy.
-    
+
+
 @dataclass
 class Trajectory:
     """Time-stamped sequence of 4x4 poses ``T_world_frame``.
@@ -215,7 +222,7 @@ class Trajectory:
             Number of stored poses.
         """
         return len(self.poses)  # One pose per timestamp.
-    
+
     def conjugated(self, new_from_old: FloatArray) -> Trajectory:
         """Re-express every pose in a different rigidly attached frame.
 
@@ -234,4 +241,4 @@ class Trajectory:
         converted = Trajectory()  # Output container.
         for timestamp, pose in zip(self.timestamps, self.poses, strict=True):  # Walk the poses in order.
             converted.append(timestamp, new_from_old @ pose @ old_from_new)  # Apply the conjugation.
-        return converted  # Poses of the new frame.        
+        return converted  # Poses of the new frame.
