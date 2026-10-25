@@ -250,4 +250,67 @@ class StereoVisualOdometry:
         y = (pixels[valid, 1] - self._camera.cy) * z[valid] / self._camera.fy  # Pinhole back-projection, y.
         return np.column_stack([x, y, z[valid]]), valid  # (M, 3) points plus mask.
     
-    
+    def _track(self, frame: StereoFrame) -> TrackingResult:
+        """Estimate the pose of a frame relative to the current keyframe.
+
+        Args:
+            frame: Frame to track.
+
+        Returns:
+            Estimated pose and measurements.
+        """
+        assert self._keyframe is not None  # Guaranteed by process().
+        keyframe = self._keyframe  # Local alias.
+        start = time.perf_counter()  # Time the whole step.
+
+        match_start = time.perf_counter()  # Time the front end.
+        matches = self._matcher.match(keyframe.view, ImageView(frame.index, frame.left))  # Keyframe -> current correspondences.
+        self._matcher.synchronize()  # Wait for GPU work so the timing is honest.
+        match_ms = _elapsed_ms(match_start)  # Front-end time.
+
+        pose_start = time.perf_counter()  # Time lifting + PnP.
+        points_3d, valid = self._lift_to_3d(matches.points_a, keyframe.depth)  # 3D points in the keyframe frame.
+        predicted_pose = self._last_pose @ self._velocity  # Constant-velocity prediction of T_world_cur.
+        prior = invert_pose(predicted_pose) @ keyframe.world_from_camera  # Same prediction as T_cur_kf, the PnP unknown.
+        estimate = self._pose_estimator.estimate(points_3d, matches.points_b[valid].astype(np.float64), self._camera_matrix, prior)  # Robust PnP.
+        pose_ms = _elapsed_ms(pose_start)  # Pose time.
+        
+        if estimate.success:  # PnP found a well-supported pose.
+            pose = keyframe.world_from_camera @ invert_pose(estimate.camera_from_reference)  # T_world_cur = T_world_kf @ T_kf_cur.
+        else:  # Tracking failure.
+            pose = predicted_pose  # Coast on the motion model.
+            self._num_failures += 1  # Count the failure.
+        self._velocity = invert_pose(self._last_pose) @ pose  # Update the motion model (unchanged on failure).
+        self._last_pose = pose  # Remember for the next prediction.
+
+        frames_since = frame.index - keyframe.frame_index  # Keyframe age.
+        insert = (not estimate.success) or self._keyframe_policy.should_insert(  # Re-anchor on failure or when the policy says so.
+            invert_pose(keyframe.world_from_camera) @ pose,
+            estimate.num_inliers,
+            frames_since,  # T_kf_cur, support, age.
+        )
+        depth_ms = self._create_keyframe(frame, pose) if insert else 0.0  # Depth is only needed for keyframes.
+        total_ms = _elapsed_ms(start)  # Stop before measurement-only work below.
+
+        ratio = (  # Front-end quality metric, excluded from runtime.
+            essential_inlier_ratio(matches, self._camera_matrix, self._config.essential_threshold_px)  # 2D-2D RANSAC.
+            if self._config.compute_essential_inlier_ratio  # Only if enabled.
+            else float("nan")  # Otherwise undefined.
+        )
+        
+        self._trajectory.append(frame.timestamp, pose)  # Record the pose.
+        stats = FrameStats(  # Collect measurements.
+            frame_index=frame.index,
+            timestamp=frame.timestamp,  # Identification.
+            num_matches=len(matches),
+            num_matches_with_depth=int(valid.sum()),  # Match counts.
+            num_pnp_inliers=estimate.num_inliers,
+            essential_inlier_ratio=ratio,  # Quality.
+            tracking_ok=estimate.success,
+            is_keyframe=insert,  # Flags.
+            match_ms=match_ms,
+            pose_ms=pose_ms,
+            depth_ms=depth_ms,
+            total_ms=total_ms,  # Timings.
+        )
+        return TrackingResult(pose, stats)  # Report.
