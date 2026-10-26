@@ -15,8 +15,7 @@ Status (mid submission, Oct 2026): two stereo VO pipelines sharing one evaluatio
   fixed SGBM stereo depth, PnP + RANSAC, with the same LM available as refinement.
 
 Evaluated with evo (ATE/RPE) and a port of the KITTI devkit (t_rel, r_rel) on KITTI 00,
-EuRoC MH_01 and a built-in synthetic sequence for smoke testing. Results and the mid report are in
-[docs/mid_report.md](docs/mid_report.md) ([LaTeX](docs/mid_report.tex)).
+EuRoC MH_01 and a built-in synthetic sequence for smoke testing.
 SuperPoint+LightGlue, ALIKED+LightGlue, MASt3R, sliding-window bundle adjustment and the ROS 2 node come next.
  
 ## Project layout
@@ -251,23 +250,6 @@ SE(3) update, with analytic Jacobians `[I | -[p]x]` and the pinhole projection J
 Each residual is whitened by `J_X Sigma_X J_X^T + sigma^2 I`, where `Sigma_X` is the
 triangulation covariance, so distant points (sigma_Z ~ Z^2) are down-weighted. The tests
 check the Jacobians against finite differences and the covariance against Monte Carlo.
-
-## Adding a front end
- 
-Pairwise front ends (dense pipeline): subclass `SparseFeatureMatcher` (or `FeatureMatcher` for dense methods),
-register it, and import the module in `frontend/__init__.py`. Stereo-tracking front ends
-(sparse pipeline) subclass `StereoFrontend` and register in `STEREO_FRONTENDS`:
- 
-```python
-@MATCHERS.register("superpoint_lightglue")
-class SuperPointLightGlueMatcher(SparseFeatureMatcher):
-    name = "superpoint_lightglue"
- 
-    def extract(self, image: ImageArray) -> Features: ...
-    def match_features(self, features_a: Features, features_b: Features) -> Correspondences: ...
-    def synchronize(self) -> None:
-        torch.cuda.synchronize()  # Required for correct GPU timings
-```
  
 ## Checks
  
