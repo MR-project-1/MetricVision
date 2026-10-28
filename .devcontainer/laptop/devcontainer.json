@@ -1,0 +1,32 @@
+// Dev container for the laptop (x86_64, NVIDIA GPU with 6 GB VRAM).
+// VS Code: "Dev Containers: Reopen in Container" and pick "vobench (laptop, CUDA)".
+{
+  "name": "metricvision (laptop, CUDA)",  // Name shown in the VS Code picker.
+  "build": {
+    "dockerfile": "Dockerfile",  // Laptop image defined next to this file.
+    "context": "../.."  // Build from the repository root.
+  },
+  "runArgs": [
+    "--gpus=all",  // Expose the NVIDIA GPU (needs the NVIDIA Container Toolkit on the host).
+    "--ipc=host",  // Larger shared memory, needed by PyTorch data loaders later.
+    "--network=host"  // Share the host network; later lets ROS 2 nodes talk to the robot.
+  ],
+  "initializeCommand": "mkdir -p ${localEnv:HOME}/datasets",  // Runs on the host so the bind mount below always exists.
+  "mounts": [
+    "source=${localEnv:HOME}/datasets,target=/data,type=bind",  // Host ~/datasets appears as /data inside the container.
+    "source=metricvision-uv-cache,target=/root/.cache/uv,type=volume"  // Persist uv's download cache across rebuilds.
+  ],
+  "postCreateCommand": "uv sync --all-groups",  // Create /opt/venv from uv.lock, including dev tools.
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",  // Python language support.
+        "charliermarsh.ruff",  // Linting and formatting.
+        "ms-python.mypy-type-checker"  // Type checking in the editor.
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "/opt/venv/bin/python"  // Use the uv-managed environment.
+      }
+    }
+  }
+}
