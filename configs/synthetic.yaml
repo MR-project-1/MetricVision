@@ -23,9 +23,12 @@ stereo_frontend:  # Used when pipeline is sparse: FAST + ORB stereo matching, KL
     fast_threshold: 15  # FAST corner threshold.
     circular_tolerance_px: 1.0  # Closing error allowed in the circular check.
     epipolar_tolerance_px: 1.5  # Row difference allowed between left and right.
+<<<<<<< HEAD
     stereo_matcher: orb  # orb (descriptor + ratio test) | klt (sub-pixel KLT along the epipolar line, L->R->L checked).
     corner_score: fast  # fast | min_eig (Shi-Tomasi score: better-conditioned KLT windows).
     fast_threshold_min: null  # e.g. 5: low-threshold FAST top-up in grid cells the main threshold leaves empty.
+=======
+>>>>>>> origin/main
 
 depth:
   name: sgbm  # Fixed stereo depth source.
@@ -39,19 +42,25 @@ odometry:
   essential_threshold_px: 1.0  # Inlier threshold for the front-end quality metric.
   stereo_sigma_px: 0.5  # Pixel/disparity noise for triangulation covariance (weights the LM).
   sparse_point_anchor: fused  # Sparse only: previous (frame-to-frame) | birth (keep first 3D) | fused (inverse-covariance fusion).
+<<<<<<< HEAD
   anchor_param: xyz  # Birth/fused anchors: xyz (Gaussian world point) | inverse_depth (1-D fusion on the birth ray).
   anchor_pose_inflation: false  # Add the LM pose covariance to new point observations (stops over-confident anchors).
   noise_model: fixed  # fixed (stereo_sigma_px) | adaptive (re-estimated from whitened LM residuals).
   max_depth_baselines: 0  # Depth gate for pose estimation in baselines (0 = off; heuristic baseline for covariance weighting).
   realign_every: 0  # Re-align tracks >= realign_min_age frames old against their birth template every N frames (0 = off; 5 is a good value).
   rig_mode: rigid  # rigid (one pose, both images) | independent (per-camera PnP, implied extrinsic logged) | averaged (SE(3) mean).
+=======
+>>>>>>> origin/main
   pnp:
     reprojection_error_px: 2.0  # PnP RANSAC inlier threshold.
     iterations: 200  # PnP RANSAC iterations.
     min_inliers: 15  # Below this, the frame counts as a tracking failure.
     refine: lm  # none | opencv (cv2.solvePnPRefineLM) | lm (covariance-weighted rigid-rig LM, analytic Jacobians).
+<<<<<<< HEAD
     ransac: opencv  # opencv (solvePnPRansac, left image) | stereo (AP3P + MSAC on the (u_l, v_l, u_r) rig residual).
     lm_pixel_sigma: null  # null = share stereo_sigma_px (one noise model); 1.0 reproduces the mid-report runs.
+=======
+>>>>>>> origin/main
   keyframe:
     min_inliers: 100  # New keyframe when inliers drop below this.
     max_translation_m: 0.5  # ...or after this much motion.

@@ -42,6 +42,7 @@ LABELS = {  # Human-readable run names (fallback: the folder name).
     "sparse_birth_lm": "Sparse birth anchors, rig-LM",
     "sparse_fused_opencv": "Sparse fused anchors, OpenCV-LM",
     "sparse_fused_lm": "Sparse fused anchors, rig-LM (proposed)",
+<<<<<<< HEAD
     "abl_ref": "Ablation ref: fused, rig-LM, shared noise",
     "abl_mono": "- right-image residuals",
     "abl_nocov": "- covariance weighting",
@@ -64,6 +65,14 @@ ORDER = list(LABELS)  # Table/legend order.
 KEY_RUNS = ("dense_orb_lm", "sparse_f2f_lm", "sparse_fused_lm")  # Uncluttered comparison panel.
 _PALETTE = ["#9e9e9e", "#1f77b4", "#17becf", "#ffbb78", "#ff7f0e", "#d62728", "#9467bd", "#8c564b", "#2ca02c"]  # Mid-report runs.
 COLOURS = {run: (_PALETTE[i] if i < len(_PALETTE) else plt.get_cmap("tab20")(i - len(_PALETTE))) for i, run in enumerate(ORDER)}  # noqa: E501  # One colour per method in every plot.
+=======
+}
+ORDER = list(LABELS)  # Table/legend order.
+KEY_RUNS = ("dense_orb_lm", "sparse_f2f_lm", "sparse_fused_lm")  # Uncluttered comparison panel.
+COLOURS = dict(
+    zip(ORDER, ["#9e9e9e", "#1f77b4", "#17becf", "#ffbb78", "#ff7f0e", "#d62728", "#9467bd", "#8c564b", "#2ca02c"], strict=True)
+)  # One colour per method in every plot.
+>>>>>>> origin/main
 
 
 def _colour(run: str) -> str | None:

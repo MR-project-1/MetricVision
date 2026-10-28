@@ -34,7 +34,11 @@ class LMConfig:
     Attributes:
         max_iterations: Maximum number of LM iterations.
         initial_lambda: Initial damping factor (multiplies diag(H)).
+<<<<<<< HEAD
         huber_delta: Huber threshold on the whitened residual norm (in standard deviations); ``inf`` gives plain least squares.
+=======
+        huber_delta: Huber threshold on the whitened residual norm (in standard deviations).
+>>>>>>> origin/main
         pixel_sigma: Observation noise of each image coordinate, pixels.
         step_tolerance: Stop when the update norm falls below this.
         inlier_chi2_stereo: Whitened squared-residual threshold for stereo (3-dof: u_l, v_l, u_r) residuals.
@@ -61,10 +65,13 @@ class LMResult:
         iterations: Iterations performed.
         cost_history: Robust cost after every accepted step, starting with the initial cost.
         inlier_mask: (N,) points whose whitened residual passes the chi^2 test at the refined pose.
+<<<<<<< HEAD
         covariance: (6, 6) pose covariance from the Gauss-Newton information at the solution (inliers only,
             IRLS-weighted); None if the information matrix is singular.
         whitened_sq_norms: (N,) squared whitened residual norms at the solution (NaN for invalid points).
         residual_dof: Residual dimension per point.
+=======
+>>>>>>> origin/main
     """
 
     camera_from_reference: FloatArray  # Refined pose.
@@ -73,9 +80,12 @@ class LMResult:
     iterations: int  # Iterations used.
     inlier_mask: BoolArray  # Post-refinement inliers.
     cost_history: tuple[float, ...] = ()  # Convergence trace (for plots).
+<<<<<<< HEAD
     covariance: FloatArray | None = None  # (6, 6) covariance of the left-perturbation delta of T_cur_ref (inverse Gauss-Newton information).
     whitened_sq_norms: FloatArray | None = None  # (N,) squared Mahalanobis norm of each residual at the solution (noise calibration).
     residual_dof: int = 3  # Dimension of each residual block (3 stereo, 2 mono).
+=======
+>>>>>>> origin/main
 
 
 def projection_jacobian(points: FloatArray, fx: float, fy: float) -> FloatArray:
@@ -192,8 +202,11 @@ def _robust_cost(whitened: FloatArray, delta: float) -> tuple[float, FloatArray]
         Total cost and (N,) weights.
     """
     norms = np.linalg.norm(whitened, axis=1)  # Per-point Mahalanobis distance.
+<<<<<<< HEAD
     if not np.isfinite(delta):  # Robust kernel disabled (ablation): ordinary least squares.
         return float(0.5 * np.sum(norms**2)), np.ones_like(norms)  # Quadratic cost, unit weights.
+=======
+>>>>>>> origin/main
     quadratic = norms <= delta  # Inside the quadratic region.
     cost = np.where(quadratic, 0.5 * norms**2, delta * (norms - 0.5 * delta))  # Huber loss.
     weights = np.where(quadratic, 1.0, delta / np.maximum(norms, 1e-12))  # IRLS weights.
@@ -264,6 +277,7 @@ def refine_pose_lm(
         if not improved or float(np.linalg.norm(step)) < config.step_tolerance:  # Converged or stuck.
             break  # Done.
     threshold = config.inlier_chi2_stereo if observations_right is not None else config.inlier_chi2_mono  # Per-dimension chi^2 test.
+<<<<<<< HEAD
     sq_norms = np.sum(e**2, axis=1)  # Squared Mahalanobis norm per point.
     inliers = (sq_norms < threshold) & valid  # Post-refinement inliers.
     information = np.einsum("n,nki,nkj->ij", w * inliers, jw, jw)  # Robust GN information of the inliers at the solution.
@@ -274,3 +288,7 @@ def refine_pose_lm(
     sq_norms = np.where(valid, sq_norms, np.nan)  # Invalid points carry no information.
     dof = 3 if observations_right is not None else 2  # Residual dimension.
     return LMResult(pose, initial_cost, cost, iterations, inliers, tuple(history), covariance, sq_norms, dof)  # Report.
+=======
+    inliers = (np.sum(e**2, axis=1) < threshold) & valid  # Post-refinement inliers.
+    return LMResult(pose, initial_cost, cost, iterations, inliers, tuple(history))  # Report.
+>>>>>>> origin/main

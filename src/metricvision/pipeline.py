@@ -59,6 +59,7 @@ class RunSummary:
         mean_total_ms: Mean end-to-end time per frame.
         fps: Throughput implied by mean_total_ms.
         errors: Trajectory errors, or None without ground truth.
+<<<<<<< HEAD
         mean_vertical_disparity_px: Mean per-frame median v_l - v_r of tracked pairs (rig-consistency signal).
         mean_vertical_disparity_mad_px: Mean per-frame robust spread of v_l - v_r.
         final_noise_sigma_px: Pixel noise assumed at the end of the run (adaptive noise model).
@@ -67,6 +68,8 @@ class RunSummary:
         mean_extrinsic_dev_rot_deg: Same, rotation.
         total_realigned: Track observations corrected by birth-template re-alignment.
         total_realign_dropped: Tracks ended because re-alignment failed.
+=======
+>>>>>>> origin/main
     """
 
     dataset: str  # Sequence tag.
@@ -88,6 +91,7 @@ class RunSummary:
     mean_total_ms: float  # Total cost.
     fps: float  # Throughput.
     errors: TrajectoryErrors | None  # Accuracy.
+<<<<<<< HEAD
     mean_vertical_disparity_px: float = float("nan")  # Rig consistency.
     mean_vertical_disparity_mad_px: float = float("nan")  # Rig consistency spread.
     final_noise_sigma_px: float = float("nan")  # Noise model.
@@ -96,6 +100,8 @@ class RunSummary:
     mean_extrinsic_dev_rot_deg: float = float("nan")  # Rig ablation.
     total_realigned: int = 0  # Drift correction.
     total_realign_dropped: int = 0  # Drift correction.
+=======
+>>>>>>> origin/main
 
     @classmethod
     def from_stats(
@@ -147,6 +153,7 @@ class RunSummary:
             mean_total_ms=mean_total,  # Total time.
             fps=1000.0 / mean_total if mean_total > 0 else float("nan"),  # Frames per second.
             errors=errors,  # Accuracy.
+<<<<<<< HEAD
             mean_vertical_disparity_px=_finite_mean([s.vertical_disparity_median_px for s in tracked]),  # Rig consistency.
             mean_vertical_disparity_mad_px=_finite_mean([s.vertical_disparity_mad_px for s in tracked]),
             final_noise_sigma_px=float(stats[-1].noise_sigma_px) if stats else float("nan"),  # Last noise estimate.
@@ -155,6 +162,8 @@ class RunSummary:
             mean_extrinsic_dev_rot_deg=_finite_mean([s.extrinsic_dev_rot_deg for s in tracked]),
             total_realigned=int(sum(s.num_realigned for s in tracked)),  # Drift correction.
             total_realign_dropped=int(sum(s.num_realign_dropped for s in tracked)),
+=======
+>>>>>>> origin/main
         )
 
     def to_dict(self) -> dict[str, Any]:

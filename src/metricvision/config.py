@@ -3,7 +3,11 @@
 from __future__ import annotations  # Postponed evaluation of type hints.
 
 from collections.abc import Mapping  # Input type hints.
+<<<<<<< HEAD
 from dataclasses import asdict, dataclass, field, fields, replace  # Immutable configs and copy-with-changes.
+=======
+from dataclasses import dataclass, field, replace  # Immutable configs and copy-with-changes.
+>>>>>>> origin/main
 from pathlib import Path  # Filesystem paths.
 from typing import Any  # Loosely typed YAML content.
 
@@ -196,6 +200,7 @@ class ExperimentConfig:
         if run_name is not None:  # Name the output folder.
             config = replace(config, run_name=run_name)  # Set it.
         return config  # Updated copy (the original is untouched).
+<<<<<<< HEAD
 
     def with_settings(self, assignments: list[str] | tuple[str, ...]) -> ExperimentConfig:
         """Return a copy with generic ``section.key=value`` overrides applied (``--set`` on the command line).
@@ -246,3 +251,5 @@ class ExperimentConfig:
             else:
                 raise ValueError(f"Unknown setting '{key}'")
         return config  # Updated copy.
+=======
+>>>>>>> origin/main
