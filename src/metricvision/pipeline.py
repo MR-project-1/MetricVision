@@ -4,7 +4,7 @@ from __future__ import annotations  # Postponed evaluation of type hints.
 
 import math  # Finite-value checks.
 from collections.abc import Sequence  # Input type hints.
-from dataclasses import asdict, dataclass  # Summary container.
+from dataclasses import asdict, dataclass, replace  # Summary container.
 from pathlib import Path  # Output paths.
 from typing import Any  # Loosely typed summary values.
 
@@ -17,6 +17,7 @@ from metricvision.backend.stereo_odometry import SparseStereoOdometry  # Sparse 
 from metricvision.config import ExperimentConfig  # Experiment settings.
 from metricvision.datasets import DATASETS, StereoDataset  # Dataset registry (import registers loaders).
 from metricvision.depth import DEPTH_ESTIMATORS, DepthEstimator  # Depth registry (import registers estimators).
+from metricvision.evaluation.consistency import relative_nees  # NEES of the predicted pose covariance.
 from metricvision.evaluation.trajectory_metrics import TrajectoryErrors, evaluate_trajectory  # Accuracy metrics.
 from metricvision.evaluation.writers import write_json, write_kitti, write_rows_csv, write_tum  # Output writers.
 from metricvision.frontend import MATCHERS, STEREO_FRONTENDS  # Front-end registries (import registers them).
@@ -59,7 +60,6 @@ class RunSummary:
         mean_total_ms: Mean end-to-end time per frame.
         fps: Throughput implied by mean_total_ms.
         errors: Trajectory errors, or None without ground truth.
-<<<<<<< HEAD
         mean_vertical_disparity_px: Mean per-frame median v_l - v_r of tracked pairs (rig-consistency signal).
         mean_vertical_disparity_mad_px: Mean per-frame robust spread of v_l - v_r.
         final_noise_sigma_px: Pixel noise assumed at the end of the run (adaptive noise model).
@@ -68,8 +68,12 @@ class RunSummary:
         mean_extrinsic_dev_rot_deg: Same, rotation.
         total_realigned: Track observations corrected by birth-template re-alignment.
         total_realign_dropped: Tracks ended because re-alignment failed.
-=======
->>>>>>> origin/main
+        estimated_path_length_m: Length of the estimated path (available without ground truth).
+        loop_closure_error_m: Distance between the last and the first estimated position. For sequences that start
+            and end at the same marked spot (wheelchair loops) this is the final translation error without ground truth.
+        loop_closure_error_pct: The same in percent of the estimated path length.
+        consistency: Frame-to-frame NEES of the predicted pose covariance (sparse pipeline with LM and ground truth).
+        mean_ba_ms: Mean bundle-adjustment time per frame (amortised).
     """
 
     dataset: str  # Sequence tag.
@@ -91,7 +95,6 @@ class RunSummary:
     mean_total_ms: float  # Total cost.
     fps: float  # Throughput.
     errors: TrajectoryErrors | None  # Accuracy.
-<<<<<<< HEAD
     mean_vertical_disparity_px: float = float("nan")  # Rig consistency.
     mean_vertical_disparity_mad_px: float = float("nan")  # Rig consistency spread.
     final_noise_sigma_px: float = float("nan")  # Noise model.
@@ -100,8 +103,11 @@ class RunSummary:
     mean_extrinsic_dev_rot_deg: float = float("nan")  # Rig ablation.
     total_realigned: int = 0  # Drift correction.
     total_realign_dropped: int = 0  # Drift correction.
-=======
->>>>>>> origin/main
+    estimated_path_length_m: float = float("nan")  # Distance travelled (estimate).
+    loop_closure_error_m: float = float("nan")  # Final position error of loop sequences.
+    loop_closure_error_pct: float = float("nan")  # ... in percent of the path.
+    consistency: dict[str, Any] | None = None  # NEES summary.
+    mean_ba_ms: float = float("nan")  # Bundle adjustment cost.
 
     @classmethod
     def from_stats(
@@ -153,7 +159,6 @@ class RunSummary:
             mean_total_ms=mean_total,  # Total time.
             fps=1000.0 / mean_total if mean_total > 0 else float("nan"),  # Frames per second.
             errors=errors,  # Accuracy.
-<<<<<<< HEAD
             mean_vertical_disparity_px=_finite_mean([s.vertical_disparity_median_px for s in tracked]),  # Rig consistency.
             mean_vertical_disparity_mad_px=_finite_mean([s.vertical_disparity_mad_px for s in tracked]),
             final_noise_sigma_px=float(stats[-1].noise_sigma_px) if stats else float("nan"),  # Last noise estimate.
@@ -162,8 +167,7 @@ class RunSummary:
             mean_extrinsic_dev_rot_deg=_finite_mean([s.extrinsic_dev_rot_deg for s in tracked]),
             total_realigned=int(sum(s.num_realigned for s in tracked)),  # Drift correction.
             total_realign_dropped=int(sum(s.num_realign_dropped for s in tracked)),
-=======
->>>>>>> origin/main
+            mean_ba_ms=_finite_mean([s.ba_ms for s in tracked]),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -227,7 +231,8 @@ class ExperimentRunner:
             result = self._odometry.process(self._dataset.load_frame(index))  # Track one frame.
             stats.append(result.stats)  # Keep its measurements.
 
-        estimate = self._odometry.trajectory.conjugated(self._dataset.body_from_camera)  # Express poses in the ground-truth body frame.
+        camera_trajectory = self._odometry.trajectory  # Left-camera poses.
+        estimate = camera_trajectory.conjugated(self._dataset.body_from_camera)  # Express poses in the ground-truth body frame.
         reference = self._dataset.ground_truth()  # May be None.
         errors = evaluate_trajectory(estimate, reference) if reference is not None and len(estimate) > 2 else None  # Accuracy, when possible.
         summary = RunSummary.from_stats(  # Aggregate.
@@ -240,6 +245,23 @@ class ExperimentRunner:
             self._odometry.num_keyframes,
             errors,
         )
+        positions = np.array([pose[:3, 3] for pose in camera_trajectory.poses])  # Estimated camera positions.
+        if len(positions) > 1:  # Ground-truth-free drift for loop sequences.
+            length = float(np.sum(np.linalg.norm(np.diff(positions, axis=0), axis=1)))
+            closure = float(np.linalg.norm(positions[-1] - positions[0]))
+            summary = replace(
+                summary,
+                estimated_path_length_m=length,
+                loop_closure_error_m=closure,
+                loop_closure_error_pct=100.0 * closure / length if length > 0 else float("nan"),
+            )
+        covariances = getattr(self._odometry, "pose_covariances", None)  # Sparse pipeline only.
+        nees = None
+        if covariances is not None and reference is not None:  # Consistency of the predicted uncertainty.
+            reference_camera = reference.conjugated(np.linalg.inv(self._dataset.body_from_camera))  # GT in the camera frame.
+            consistency, nees = relative_nees(camera_trajectory, reference_camera, covariances)
+            if consistency.num_frames:
+                summary = replace(summary, consistency=consistency.to_dict())
 
         output_dir = self.output_dir  # Resolve once.
         output_dir.mkdir(parents=True, exist_ok=True)  # Create folders as needed.
@@ -247,4 +269,9 @@ class ExperimentRunner:
         write_kitti(estimate, output_dir / "trajectory.kitti")  # For evo/devkit (KITTI ground truth).
         write_rows_csv([s.to_dict() for s in stats], output_dir / "frame_stats.csv")  # Per-frame data for plots.
         write_json(summary.to_dict(), output_dir / "summary.json")  # Aggregates.
+        if covariances is not None:  # Per-frame covariance (and NEES) for offline consistency analysis.
+            stacked = np.stack([c if c is not None else np.full((6, 6), np.nan) for c in covariances])
+            np.savez_compressed(
+                output_dir / "pose_covariances.npz", covariance=stacked, nees=nees if nees is not None else np.full(len(stacked), np.nan)
+            )
         return summary  # Also returned for programmatic use (tests, sweeps).

@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 """Sparse stereo visual odometry (FAST stereo pairs, KLT circular tracking, robust PnP + rigid-rig LM).
 
 Per frame:
@@ -14,22 +13,6 @@ Per frame:
    are fused with pose-uncertainty inflation; the pixel noise is re-estimated from whitened LM residuals.
 5. Only inliers survive as tracks; new pairs are detected when tracks run low.
 On failure the pose coasts on the motion model, all tracks are re-detected and the failure is counted.
-=======
-"""Frame-to-frame sparse stereo visual odometry (FAST + ORB stereo, KLT circular tracking, PnP + rig LM).
-
-Per frame:
-1. Stereo pairs of the previous frame are triangulated (with first-order covariance).
-2. The front end tracks them into the current frame with the circular L/R check,
-   seeded by projecting the 3D points with a constant-velocity prediction.
-3. PnP + RANSAC on (3D, current left 2D) gives the initial pose; the
-   covariance-weighted rigid-rig LM then refines it with both current images.
-   The 3D points are either re-triangulated in the previous frame (``previous``
-   anchor: pure frame-to-frame) or kept from each track's birth frame in world
-   coordinates (``birth`` anchor), which stops small per-frame biases from chaining.
-4. Only LM inliers survive as tracks; new pairs are detected when tracks run low.
-On failure the pose coasts on the motion model, all tracks are re-detected and
-the failure is counted, exactly as in the dense keyframe pipeline.
->>>>>>> origin/main
 """
 
 from __future__ import annotations  # Postponed evaluation of type hints.
@@ -38,7 +21,6 @@ import time  # Runtime measurements.
 
 import numpy as np  # Array maths.
 
-<<<<<<< HEAD
 from metricvision.backend.anchors import (  # Landmark models.
     AnchorState,
     fuse_inverse_depth,
@@ -47,24 +29,20 @@ from metricvision.backend.anchors import (  # Landmark models.
     median_chi2,
     pose_uncertainty_covariance,
 )
+from metricvision.backend.motion_alternatives import (  # RQ2 baseline estimators on the same inliers.
+    mahalanobis_3d,
+    refine_translation,
+    rotation_from_essential,
+    umeyama,
+)
 from metricvision.backend.odometry import OdometryConfig, TrackingResult  # Shared settings and result type.
-from metricvision.backend.pose import PnPPoseEstimator, PoseEstimate  # PnP + RANSAC (+ LM).
+from metricvision.backend.pose import PnPPoseEstimator, PoseEstimate, _stereo_errors  # PnP + RANSAC (+ LM).
 from metricvision.backend.stats import FrameStats  # Per-frame measurements.
+from metricvision.backend.window_ba import SlidingWindowBA, WindowBAConfig  # Keyframe bundle adjustment.
 from metricvision.core.geometry import invert_pose, make_pose, rotation_angle_deg  # Pose helpers.
 from metricvision.core.stereo import triangulate_rectified, triangulation_covariance  # Sparse triangulation.
 from metricvision.core.types import (  # Shared types.
     Correspondences,
-=======
-from metricvision.backend.odometry import OdometryConfig, TrackingResult  # Shared settings and result type.
-from metricvision.backend.pose import PnPPoseEstimator  # PnP + RANSAC (+ LM).
-from metricvision.backend.stats import FrameStats  # Per-frame measurements.
-from metricvision.core.geometry import invert_pose  # Rigid inverse.
-from metricvision.core.stereo import triangulate_rectified, triangulation_covariance  # Sparse triangulation.
-from metricvision.core.types import (  # Shared types.
-    BoolArray,
-    Correspondences,
-    Float32Array,
->>>>>>> origin/main
     FloatArray,
     ImageArray,
     StereoCamera,
@@ -72,10 +50,7 @@ from metricvision.core.types import (  # Shared types.
     Trajectory,
 )
 from metricvision.evaluation.frontend_metrics import essential_inlier_ratio  # Front-end-only metric.
-<<<<<<< HEAD
 from metricvision.frontend.alignment import align_warped, predict_affine, refine_right  # Track re-alignment.
-=======
->>>>>>> origin/main
 from metricvision.frontend.stereo_klt import StereoFrontend, StereoTracks  # Front end.
 
 
@@ -91,7 +66,6 @@ def _elapsed_ms(start: float) -> float:
     return (time.perf_counter() - start) * 1000.0  # Seconds to milliseconds.
 
 
-<<<<<<< HEAD
 def _chordal_mean(rotations: list[FloatArray]) -> FloatArray:
     """Chordal L2 mean of rotations (projection of their sum onto SO(3)).
 
@@ -107,10 +81,6 @@ def _chordal_mean(rotations: list[FloatArray]) -> FloatArray:
 
 class SparseStereoOdometry:
     """Stereo VO driven by a sparse ``StereoFrontend``; same API as ``StereoVisualOdometry``."""
-=======
-class SparseStereoOdometry:
-    """Frame-to-frame stereo VO driven by a sparse ``StereoFrontend``; same API as ``StereoVisualOdometry``."""
->>>>>>> origin/main
 
     def __init__(self, camera: StereoCamera, frontend: StereoFrontend, config: OdometryConfig | None = None) -> None:
         """Wire the pipeline together.
@@ -118,33 +88,30 @@ class SparseStereoOdometry:
         Args:
             camera: Rectified stereo camera.
             frontend: Sparse stereo front end.
-<<<<<<< HEAD
             config: Back-end settings; defaults when omitted.
 
         Raises:
             ValueError: If the anchor mode is unknown.
-=======
-            config: Back-end settings (PnP/LM thresholds, stereo noise); defaults when omitted.
->>>>>>> origin/main
         """
         self._camera = camera  # Camera model.
         self._camera_matrix = camera.intrinsic_matrix  # Cached K.
         self._frontend = frontend  # Front end.
         self._config = config or OdometryConfig()  # Settings.
         self._pose_estimator = PnPPoseEstimator(self._config.pnp)  # PnP solver.
-<<<<<<< HEAD
         self._right_from_left = make_pose(np.eye(3), np.array([-camera.baseline, 0.0, 0.0]))  # Calibrated T_RL.
+        ba_config = WindowBAConfig(  # Keyframe bundle adjustment (window 0 = off).
+            window=self._config.ba_window,
+            keyframe_every=self._config.ba_keyframe_every,
+            min_translation_m=self._config.ba_min_translation_m,
+            iterations=self._config.ba_iterations,
+            huber_delta=self._config.pnp.lm_huber_delta if np.isfinite(self._config.pnp.lm_huber_delta) else 1e9,
+        )
+        self._ba = SlidingWindowBA(ba_config, self._camera_matrix, camera.baseline)
         if self._config.sparse_point_anchor not in ("previous", "birth", "fused"):  # Typo guard.
             raise ValueError(f"sparse_point_anchor must be 'previous', 'birth' or 'fused', got '{self._config.sparse_point_anchor}'")
         self.reset()  # Initialise state.
 
     # ------------------------------------------------------------------ public API
-=======
-        if self._config.sparse_point_anchor not in ("previous", "birth", "fused"):  # Typo guard.
-            raise ValueError(f"sparse_point_anchor must be 'previous', 'birth' or 'fused', got '{self._config.sparse_point_anchor}'")  # Clear error.
-        self.reset()  # Initialise state.
-
->>>>>>> origin/main
     @property
     def trajectory(self) -> Trajectory:
         """Return the estimated left-camera trajectory.
@@ -172,7 +139,6 @@ class SparseStereoOdometry:
         """
         return self._num_keyframes  # Counter.
 
-<<<<<<< HEAD
     @property
     def noise_sigma_px(self) -> float:
         """Return the pixel noise currently assumed.
@@ -182,14 +148,23 @@ class SparseStereoOdometry:
         """
         return self._sigma  # Fixed or adaptive.
 
-=======
->>>>>>> origin/main
+    @property
+    def pose_covariances(self) -> list[FloatArray | None]:
+        """Return the per-frame LM pose covariance (left perturbation of T_cam_world), None where unavailable.
+
+        Returns:
+            One entry per processed frame.
+        """
+        return self._pose_covs  # For consistency (NEES) evaluation.
+
     def reset(self) -> None:
         """Forget all state before a new sequence."""
         self._frontend.reset()  # Front-end state.
+        self._ba.reset()  # Keyframe window.
+        self._next_track_id = 0  # Persistent track identifiers.
+        self._pose_covs: list[FloatArray | None] = []  # Per-frame pose covariance.
         self._previous: tuple[ImageArray, ImageArray] | None = None  # Previous (left, right) images.
         self._tracks = StereoTracks.empty()  # Pairs in the previous frame.
-<<<<<<< HEAD
         self._state = AnchorState.empty()  # Per-track anchors (rows match self._tracks).
         self._poses: dict[int, FloatArray] = {}  # Birth-frame poses T_world_cam.
         self._images: dict[int, ImageArray] = {}  # Birth-frame left images (re-alignment only).
@@ -200,108 +175,6 @@ class SparseStereoOdometry:
         self._trajectory = Trajectory()  # Output.
         self._num_failures = 0  # Counters.
         self._num_keyframes = 0
-=======
-        self._anchors: FloatArray = np.zeros((0, 3), dtype=np.float64)  # World point per track (birth anchoring; NaN = no depth).
-        self._anchor_covariances: FloatArray = np.zeros((0, 3, 3), dtype=np.float64)  # Their world-frame covariances.
-        self._last_pose = np.eye(4, dtype=np.float64)  # T_world_prev.
-        self._velocity = np.eye(4, dtype=np.float64)  # T_prev_cur of the last step.
-        self._trajectory = Trajectory()  # Output.
-        self._num_failures = 0  # Counters.
-        self._num_keyframes = 0  # Counters.
-
-    def _replenish(self, frame: StereoFrame, tracks: StereoTracks) -> tuple[StereoTracks, bool, float]:
-        """Detect new stereo pairs when tracks run low.
-
-        Args:
-            frame: Current frame.
-            tracks: Surviving pairs in the current frame.
-
-        Returns:
-            Updated tracks, whether detection ran, and its time in milliseconds.
-        """
-        if len(tracks) >= self._frontend.min_tracks:  # Enough tracks.
-            return tracks, False, 0.0  # Nothing to do.
-        start = time.perf_counter()  # Time stereo detection + matching.
-        new = self._frontend.detect(frame.left, frame.right, tracks)  # New pairs away from existing ones.
-        self._num_keyframes += 1  # Count replenishment frames.
-        return tracks.concatenate(new), True, _elapsed_ms(start)  # Combined tracks.
-
-    def _to_world(self, tracks: StereoTracks, world_from_camera: FloatArray) -> tuple[FloatArray, FloatArray]:
-        """Triangulate stereo pairs and express points and covariances in the world frame.
-
-        Args:
-            tracks: Stereo pairs observed by the camera at ``world_from_camera``.
-            world_from_camera: T_world_cam of that frame.
-
-        Returns:
-            (N, 3) world points (NaN rows where depth is invalid) and (N, 3, 3) covariances.
-        """
-        points, valid = triangulate_rectified(tracks.left, tracks.disparity, self._camera)  # Camera-frame points.
-        covariances = np.full((len(tracks), 3, 3), np.nan, dtype=np.float64)  # Default: invalid.
-        covariances[valid] = triangulation_covariance(
-            tracks.left[valid], tracks.disparity[valid], self._camera, self._config.stereo_sigma_px
-        )  # Camera frame.
-        rotation, translation = world_from_camera[:3, :3], world_from_camera[:3, 3]  # Pose parts.
-        return points @ rotation.T + translation, rotation @ covariances @ rotation.T  # World frame (NaN propagates).
-
-    def _set_tracks(self, tracks: StereoTracks, world_from_camera: FloatArray, anchors: tuple[FloatArray, FloatArray] | None) -> None:
-        """Store tracks for the next frame, anchoring new ones at the current pose.
-
-        Args:
-            tracks: All pairs in the current frame (survivors first, then new detections).
-            world_from_camera: Current T_world_cam.
-            anchors: Anchors of the leading survivor rows, or None if there are none.
-        """
-        kept = 0 if anchors is None else len(anchors[0])  # Survivors with existing anchors.
-        new_points, new_cov = self._to_world(tracks.subset(np.arange(len(tracks)) >= kept), world_from_camera)  # Anchor new tracks here.
-        self._tracks = tracks  # Pairs.
-        self._anchors = new_points if anchors is None else np.vstack([anchors[0], new_points])  # Points.
-        self._anchor_covariances = new_cov if anchors is None else np.concatenate([anchors[1], new_cov])  # Covariances.
-
-    def _fuse(self, anchors: tuple[FloatArray, FloatArray], tracks: StereoTracks, world_from_camera: FloatArray) -> tuple[FloatArray, FloatArray]:
-        """Fuse a new stereo triangulation of each track into its anchor (information-form update).
-
-        X = (S1^-1 + S2^-1)^-1 (S1^-1 X1 + S2^-1 X2): far, uncertain anchors sharpen as tracks
-        are re-observed, while precise ones barely move.
-
-        Args:
-            anchors: Current anchor points and covariances (world frame), one per track.
-            tracks: The same tracks observed in the current frame.
-            world_from_camera: Current T_world_cam.
-
-        Returns:
-            Fused anchor points and covariances.
-        """
-        points, covariances = anchors  # Prior anchors.
-        new_points, new_cov = self._to_world(tracks, world_from_camera)  # Fresh observation.
-        ok = np.isfinite(new_points).all(axis=1) & np.isfinite(points).all(axis=1)  # Both valid.
-        if not ok.any():  # Nothing to fuse.
-            return points, covariances  # Unchanged.
-        info_old, info_new = np.linalg.inv(covariances[ok]), np.linalg.inv(new_cov[ok])  # Information matrices.
-        fused_cov = np.linalg.inv(info_old + info_new)  # Combined covariance.
-        fused = np.einsum(
-            "nij,nj->ni", fused_cov, np.einsum("nij,nj->ni", info_old, points[ok]) + np.einsum("nij,nj->ni", info_new, new_points[ok])
-        )  # Weighted mean.
-        points, covariances = points.copy(), covariances.copy()  # Do not modify the caller's arrays.
-        points[ok], covariances[ok] = fused, fused_cov  # Update.
-        return points, covariances  # Fused anchors.
-
-    def _project(self, camera_from_reference: FloatArray, points: FloatArray) -> tuple[Float32Array, np.ndarray]:
-        """Project reference-frame points into the current left image.
-
-        Args:
-            camera_from_reference: T_cur_ref.
-            points: (N, 3) points (NaN rows allowed).
-
-        Returns:
-            (N, 2) pixels and an (N,) mask of finite points in front of the camera.
-        """
-        p = points @ camera_from_reference[:3, :3].T + camera_from_reference[:3, 3]  # Transform.
-        ok = np.isfinite(p).all(axis=1) & (p[:, 2] > 0.1)  # Usable projections.
-        z = np.where(ok, p[:, 2], 1.0)  # Safe depth.
-        pixels = np.column_stack([self._camera.fx * p[:, 0] / z + self._camera.cx, self._camera.fy * p[:, 1] / z + self._camera.cy])  # Pinhole.
-        return pixels.astype(np.float32), ok  # Pixels and mask.
->>>>>>> origin/main
 
     def process(self, frame: StereoFrame) -> TrackingResult:
         """Process the next frame.
@@ -317,9 +190,9 @@ class SparseStereoOdometry:
             tracks, _, depth_ms = self._replenish(frame, StereoTracks.empty())  # Initial stereo pairs.
             self._previous = (frame.left, frame.right)  # Remember images.
             pose = np.eye(4, dtype=np.float64)  # World = first camera.
-<<<<<<< HEAD
             self._tracks, self._state = tracks, self._new_anchors(tracks, frame, pose, None)  # Anchor them at the origin.
             self._trajectory.append(frame.timestamp, pose)  # Record.
+            self._pose_covs.append(None)  # The origin is fixed.
             stats = FrameStats(frame.index, frame.timestamp, 0, 0, 0, float("nan"), True, True, 0.0, 0.0, depth_ms, _elapsed_ms(start))
             return TrackingResult(pose, stats)  # Report.
         return self._track(frame)  # Normal tracking.
@@ -395,7 +268,21 @@ class SparseStereoOdometry:
             inverse_depth_var=inverse_depth_var,
             birth_pose_cov=birth_pose_cov,
             age=np.zeros(n, dtype=np.int64),
+            track_id=self._new_ids(n),
         )
+
+    def _new_ids(self, n: int) -> np.ndarray:
+        """Allocate persistent track identifiers.
+
+        Args:
+            n: How many.
+
+        Returns:
+            (n,) identifiers.
+        """
+        ids = np.arange(self._next_track_id, self._next_track_id + n, dtype=np.int64)
+        self._next_track_id += n
+        return ids
 
     def _anchor_points(self) -> tuple[FloatArray, FloatArray]:
         """World points and covariances the current tracks are matched against.
@@ -419,7 +306,7 @@ class SparseStereoOdometry:
 
     # ------------------------------------------------------------------ pose estimation
     def _estimate(
-        self, points: FloatArray, covariances: FloatArray, observed: StereoTracks, prior: FloatArray
+        self, points: FloatArray, covariances: FloatArray, observed: StereoTracks, prior: FloatArray, previous_left: FloatArray | None = None
     ) -> tuple[PoseEstimate, FloatArray, np.ndarray, tuple[float, float]]:
         """Estimate T_cur_world with the configured rig model.
 
@@ -428,6 +315,7 @@ class SparseStereoOdometry:
             covariances: (M, 3, 3) their covariances.
             observed: Current observations of those points.
             prior: Predicted T_cur_world.
+            previous_left: (M, 2) the same tracks in the previous left image (``pose_method: soft``).
 
         Returns:
             The (left) estimate, the pose T_cur_world to use, the inlier mask, and the implied extrinsic deviation
@@ -449,6 +337,10 @@ class SparseStereoOdometry:
                 pixel_sigma=self._sigma,
             )
             inliers = est.refined_inlier_mask if est.refined_inlier_mask is not None else est.inlier_mask
+            if est.success and self._config.pose_method != "pnp":  # Alternative estimator on the RANSAC inliers.
+                pose, inliers = self._alternative(est, points, covariances, observed, previous_left)
+                est = PoseEstimate(True, pose, est.inlier_mask, est.num_inliers)  # No LM covariance for these estimators.
+                return est, pose, inliers, (float("nan"), float("nan"))
             return est, est.camera_from_reference, inliers, (float("nan"), float("nan"))
         # Independent per-camera estimation (12 DoF): each camera sees the same landmarks through its own pose.
         est_l = self._pose_estimator.estimate(points, left, self._camera_matrix, prior, covariances=cov, pixel_sigma=self._sigma)
@@ -468,6 +360,98 @@ class SparseStereoOdometry:
             rotation = _chordal_mean([pose[:3, :3], from_right[:3, :3]])
             pose = make_pose(rotation, 0.5 * (pose[:3, 3] + from_right[:3, 3]))
         return est_l, pose, mask_l & mask_r, dev
+
+    def _alternative(
+        self, est: PoseEstimate, points: FloatArray, covariances: FloatArray, observed: StereoTracks, previous_left: FloatArray | None
+    ) -> tuple[FloatArray, np.ndarray]:
+        """Re-estimate the pose from the RANSAC inliers with a baseline estimator (``pose_method``).
+
+        Outlier rejection is held fixed (same RANSAC inliers), so only the estimator differs from the rigid-rig LM.
+
+        Args:
+            est: PnP/RANSAC estimate (its inlier mask and pose are used as the inlier set and the initial guess).
+            points: (M, 3) world landmarks.
+            covariances: (M, 3, 3) their covariances.
+            observed: Current observations.
+            previous_left: (M, 2) previous left pixels of the same tracks.
+
+        Returns:
+            T_cam_world and the final inlier mask (stereo error below the RANSAC threshold).
+        """
+        mask = est.inlier_mask
+        left, right = observed.left.astype(np.float64), observed.right.astype(np.float64)
+        initial = est.camera_from_reference
+        method = self._config.pose_method
+        if method in ("umeyama3d", "mahalanobis3d"):  # 3D-3D: landmarks vs current triangulations.
+            cam_points, cam_cov = self._triangulate(observed)
+            ok = mask & np.isfinite(cam_points).all(axis=1)
+            pose = umeyama(points[ok], cam_points[ok]) if ok.sum() >= 3 else initial
+            if method == "mahalanobis3d" and ok.sum() >= 3:
+                pose = mahalanobis_3d(points[ok], covariances[ok], cam_points[ok], cam_cov[ok], pose, huber_delta=self._config.pnp.lm_huber_delta)
+        else:  # SOFT: rotation from the essential matrix, translation from stereo with the rotation fixed.
+            pose = initial.copy()
+            if previous_left is not None:
+                rotation_cur_prev = rotation_from_essential(previous_left[mask], left[mask], self._camera_matrix)
+                if rotation_cur_prev is not None:
+                    pose[:3, :3] = rotation_cur_prev @ invert_pose(self._last_pose)[:3, :3]  # R_cur_world = R_cur_prev R_prev_world.
+            cov = covariances[mask] if self._config.lm_covariance_weighting else None
+            pose = refine_translation(
+                pose,
+                points[mask],
+                left[mask],
+                right[mask],
+                self._camera_matrix,
+                self._camera.baseline,
+                cov,
+                self._sigma,
+                huber_delta=self._config.pnp.lm_huber_delta,
+            )
+        errors, _ = _stereo_errors(pose, points, left, right, self._camera_matrix, self._camera.baseline)
+        return pose, mask & (errors < self._config.pnp.reprojection_error_px)
+
+    def _bundle_adjust(
+        self, frame: StereoFrame, survivors: StereoTracks, state: AnchorState, pose: FloatArray
+    ) -> tuple[FloatArray, AnchorState, np.ndarray, int]:
+        """Insert a keyframe (if the policy says so) and optimise the window.
+
+        Args:
+            frame: Current frame.
+            survivors: Current inlier observations.
+            state: Their anchors.
+            pose: Current T_world_cam.
+
+        Returns:
+            Updated T_world_cam, updated anchors, keep mask (chi^2 outliers of the newest keyframe dropped), landmarks.
+        """
+        keep = np.ones(len(survivors), dtype=bool)
+        camera_from_world = invert_pose(pose)
+        if self._config.ba_window <= 0 or not self._ba.wants_keyframe(camera_from_world):
+            return pose, state, keep, 0
+        obs = np.column_stack([survivors.left, survivors.right[:, 0]]).astype(np.float64)  # (u_L, v_L, u_R).
+        init_points, _, _, _ = self._observe_world(survivors, pose, None)  # Initial landmark positions.
+        self._ba.add_keyframe(frame.index, camera_from_world, state.track_id, obs, init_points)
+        result = self._ba.optimise(self._sigma)
+        if result is None:
+            return pose, state, keep, 0
+        keyframes = self._ba.keyframes
+        pose = invert_pose(keyframes[-1].camera_from_world)  # Refined current pose.
+        for kf in keyframes:  # Birth poses of keyframes that are birth frames follow the refinement.
+            if kf.frame_index in self._poses:
+                self._poses[kf.frame_index] = invert_pose(kf.camera_from_world)
+        refined = np.array([int(t) in self._ba.landmarks for t in state.track_id], dtype=bool)
+        if refined.any() and self._config.sparse_point_anchor != "previous":  # Anchors take the BA landmark positions.
+            points = state.points.copy()
+            points[refined] = np.stack([self._ba.landmarks[int(t)] for t in state.track_id[refined]])
+            rho = state.inverse_depth.copy()
+            for i in np.flatnonzero(refined):  # Inverse depth on the (possibly refined) birth ray.
+                birth = self._poses.get(int(state.birth_frame[i]))
+                if birth is not None:
+                    z = ((points[i] - birth[:3, 3]) @ birth[:3, :3])[2]
+                    if z > 1e-3:
+                        rho[i] = 1.0 / z
+            state = state.replace(points=points, inverse_depth=rho)
+        keep = ~np.isin(state.track_id, result.outlier_ids)
+        return pose, state, keep, result.num_landmarks
 
     def _update_noise(self, est: PoseEstimate, inliers: np.ndarray) -> None:
         """Re-estimate the pixel noise from whitened LM residuals (``noise_model: adaptive``).
@@ -554,14 +538,6 @@ class SparseStereoOdometry:
         self._num_keyframes += 1  # Count replenishment frames.
         return tracks.concatenate(new), True, _elapsed_ms(start)
 
-=======
-            self._set_tracks(tracks, pose, None)  # Anchor them at the origin.
-            self._trajectory.append(frame.timestamp, pose)  # Record.
-            stats = FrameStats(frame.index, frame.timestamp, 0, 0, 0, float("nan"), True, True, 0.0, 0.0, depth_ms, _elapsed_ms(start))  # Init stats.
-            return TrackingResult(pose, stats)  # Report.
-        return self._track(frame)  # Normal tracking.
-
->>>>>>> origin/main
     def _track(self, frame: StereoFrame) -> TrackingResult:
         """Track the previous frame's pairs into ``frame`` and estimate its pose.
 
@@ -574,7 +550,6 @@ class SparseStereoOdometry:
         assert self._previous is not None  # Guaranteed by process().
         start = time.perf_counter()  # Whole-step timer.
         tracks = self._tracks  # Previous-frame pairs.
-<<<<<<< HEAD
         points_world, cov_world = self._anchor_points()  # Landmarks to match against.
         has_depth = np.isfinite(points_world).all(axis=1) & np.isfinite(cov_world).all(axis=(1, 2))  # Usable anchors.
         predicted_pose = self._last_pose @ self._velocity  # Constant-velocity prediction of T_world_cur.
@@ -595,10 +570,12 @@ class SparseStereoOdometry:
             usable &= np.nan_to_num(depth, nan=np.inf) < self._config.max_depth_baselines * self._camera.baseline
         used_index = kept_index[usable]  # Rows used for pose estimation.
         observed = current.subset(usable)  # Their current observations.
-        estimate, camera_from_world, inliers, extrinsic_dev = self._estimate(points_world[used_index], cov_world[used_index], observed, prior)
+        estimate, camera_from_world, inliers, extrinsic_dev = self._estimate(
+            points_world[used_index], cov_world[used_index], observed, prior, tracks.left[used_index].astype(np.float64)
+        )
         pose_ms = _elapsed_ms(pose_start)
 
-        realigned, realign_dropped, fused = 0, 0, 0  # Counters.
+        realigned, realign_dropped, fused, ba_landmarks, ba_ms = 0, 0, 0, 0, 0.0  # Counters.
         if estimate.success:  # Pose found.
             pose = invert_pose(camera_from_world)  # T_world_cur.
             survivors = observed.subset(inliers)  # Outliers (and moving objects) stop being tracked.
@@ -618,10 +595,15 @@ class SparseStereoOdometry:
                     fused = int(np.isfinite(obs_points).all(axis=1).sum())
                     state = state.replace(points=new_points, covariances=new_cov)
             self._update_noise(estimate, inliers)  # Adaptive noise model.
+            ba_start = time.perf_counter()
+            pose, state, ok, ba_landmarks = self._bundle_adjust(frame, survivors, state, pose)  # Keyframe window.
+            survivors, state = survivors.subset(ok), state.subset(ok)
+            ba_ms = _elapsed_ms(ba_start)
         else:  # Tracking failure.
             pose = predicted_pose  # Coast.
             pose_cov = None
             self._num_failures += 1
+            self._ba.reset()  # The window cannot bridge a failure.
             survivors, state = StereoTracks.empty(), AnchorState.empty()  # Re-detect everything.
         self._velocity = invert_pose(self._last_pose) @ pose  # Update the motion model.
         self._last_pose, self._last_pose_cov = pose, pose_cov  # Remember.
@@ -632,57 +614,6 @@ class SparseStereoOdometry:
         self._tracks = new_tracks  # Survivors first, then new pairs.
         self._state = state.concatenate(self._new_anchors(born, frame, pose, pose_cov))  # Anchors in the same order.
         self._forget_unused()  # Bounded memory.
-=======
-        if self._config.sparse_point_anchor in ("birth", "fused"):  # Points anchored where each track was born (and fused since).
-            points_world, cov_world = self._anchors, self._anchor_covariances  # Stored anchors.
-        else:  # Pure frame-to-frame: re-triangulate in the previous frame.
-            points_world, cov_world = self._to_world(tracks, self._last_pose)  # Fresh points.
-        has_depth: BoolArray = np.asarray(np.isfinite(points_world).all(axis=1), dtype=bool)  # Tracks with a valid 3D point.
-        predicted_pose = self._last_pose @ self._velocity  # Constant-velocity prediction of T_world_cur.
-        prior = invert_pose(predicted_pose)  # Predicted T_cur_world (the PnP unknown).
-        predicted_left, predicted_ok = self._project(prior, points_world)  # Where tracks should appear.
-        predicted_left = np.where(predicted_ok[:, None], predicted_left, tracks.left).astype(np.float32)  # Fall back to zero motion.
-
-        match_start = time.perf_counter()  # Front-end timer.
-        current, keep = self._frontend.track(self._previous, (frame.left, frame.right), tracks, predicted_left)  # Circular KLT.
-        self._frontend.synchronize()  # Honest timing for GPU front ends.
-        match_ms = _elapsed_ms(match_start)  # Front-end time.
-
-        pose_start = time.perf_counter()  # Pose timer.
-        usable = has_depth[keep]  # Survivors with a valid previous triangulation.
-        points_3d = points_world[keep][usable]  # 3D points (world frame).
-        covariances = cov_world[keep][usable]  # Their uncertainty.
-        observed = current.subset(usable)  # Current left/right observations.
-        estimate = self._pose_estimator.estimate(  # PnP + RANSAC, then rig LM.
-            points_3d,
-            observed.left.astype(np.float64),
-            self._camera_matrix,
-            prior,
-            points_2d_right=observed.right.astype(np.float64) if self._config.lm_right_residuals else None,  # Rig or mono LM.
-            baseline=self._camera.baseline,
-            covariances=covariances if self._config.lm_covariance_weighting else None,  # Whitening on/off.
-        )
-        pose_ms = _elapsed_ms(pose_start)  # Pose time.
-
-        if estimate.success:  # Pose found.
-            pose = invert_pose(estimate.camera_from_reference)  # T_world_cur.
-            inliers = estimate.refined_inlier_mask if estimate.refined_inlier_mask is not None else estimate.inlier_mask  # Best available inlier set.
-            survivors = observed.subset(inliers)  # Outliers (and moving objects) stop being tracked.
-            survivor_anchors: tuple[FloatArray, FloatArray] = (points_3d[inliers], covariances[inliers])  # Their anchors travel with them.
-            if self._config.sparse_point_anchor == "fused":  # Fuse this frame's stereo triangulation into each anchor.
-                survivor_anchors = self._fuse(survivor_anchors, survivors, pose)  # Inverse-covariance update.
-        else:  # Tracking failure.
-            pose = predicted_pose  # Coast.
-            self._num_failures += 1  # Count it.
-            survivors = StereoTracks.empty()  # Re-detect everything.
-            survivor_anchors = (np.zeros((0, 3)), np.zeros((0, 3, 3)))  # No anchors survive.
-        self._velocity = invert_pose(self._last_pose) @ pose  # Update the motion model.
-        self._last_pose = pose  # Remember.
-        new_tracks, replenished, depth_ms = self._replenish(frame, survivors)  # Top up features.
-        if not estimate.success and not replenished:  # Always re-detect after a failure.
-            new_tracks = self._frontend.detect(frame.left, frame.right, StereoTracks.empty())  # Fresh start.
-        self._set_tracks(new_tracks, pose, survivor_anchors)  # Keep survivors' anchors, anchor new tracks at this pose.
->>>>>>> origin/main
         self._previous = (frame.left, frame.right)  # Advance.
         total_ms = _elapsed_ms(start)  # Stop before measurement-only work.
 
@@ -695,7 +626,6 @@ class SparseStereoOdometry:
             if self._config.compute_essential_inlier_ratio
             else float("nan")
         )
-<<<<<<< HEAD
         vertical = (current.left[:, 1] - current.right[:, 1]).astype(np.float64)  # Rig-consistency signal.
         v_median = float(np.median(vertical)) if vertical.size else float("nan")
         v_mad = float(1.4826 * np.median(np.abs(vertical - v_median))) if vertical.size else float("nan")
@@ -703,18 +633,13 @@ class SparseStereoOdometry:
         if pose_cov is not None and np.isfinite(pose_cov).all():
             sigma_t = 1000.0 * float(np.sqrt(max(np.trace(pose_cov[:3, :3]), 0.0)))
             sigma_r = float(np.degrees(np.sqrt(max(np.trace(pose_cov[3:, 3:]), 0.0))))
-=======
->>>>>>> origin/main
         self._trajectory.append(frame.timestamp, pose)  # Record.
+        self._pose_covs.append(pose_cov)  # For NEES.
         stats = FrameStats(  # Measurements.
             frame_index=frame.index,
             timestamp=frame.timestamp,
             num_matches=int(keep.sum()),  # Tracks surviving the circular check.
-<<<<<<< HEAD
             num_matches_with_depth=int(usable.sum()),  # With a usable anchor.
-=======
-            num_matches_with_depth=int(usable.sum()),  # With valid previous depth.
->>>>>>> origin/main
             num_pnp_inliers=estimate.num_inliers,  # RANSAC inliers.
             essential_inlier_ratio=ratio,
             tracking_ok=estimate.success,
@@ -723,7 +648,6 @@ class SparseStereoOdometry:
             pose_ms=pose_ms,
             depth_ms=depth_ms,  # Stereo detection + matching time.
             total_ms=total_ms,
-<<<<<<< HEAD
             vertical_disparity_median_px=v_median,
             vertical_disparity_mad_px=v_mad,
             pose_sigma_trans_mm=sigma_t,
@@ -734,6 +658,8 @@ class SparseStereoOdometry:
             num_realigned=realigned,
             num_realign_dropped=realign_dropped,
             num_fused=fused,
+            ba_ms=ba_ms,
+            num_ba_landmarks=ba_landmarks,
         )
         return TrackingResult(pose, stats)
 
@@ -752,7 +678,3 @@ class SparseStereoOdometry:
         z = np.where(ok, p[:, 2], 1.0)  # Safe depth.
         pixels = np.column_stack([self._camera.fx * p[:, 0] / z + self._camera.cx, self._camera.fy * p[:, 1] / z + self._camera.cy])
         return pixels.astype(np.float32), ok
-=======
-        )
-        return TrackingResult(pose, stats)  # Report.
->>>>>>> origin/main

@@ -1,0 +1,69 @@
+# FINAL configuration (candidate) for kitti: every method upgrade switched on (lines marked "# FINAL").
+# Confirm each upgrade with scripts/run_ablations.sh on real data and switch off any that does not help;
+# docs/MetricVision_Method_Upgrades.md explains every option.
+# Run: uv run metricvision run configs/final_kitti.yaml --dataset-root <root> --run-name final
+# KITTI odometry (outdoor driving, ~1241x376 grayscale stereo at 10 Hz).
+# Run: uv run metricvision run configs/kitti.yaml --dataset-root /data/kitti
+output_dir: results  # Results go to results/<dataset tag>/<matcher>/.
+max_frames: null  # null = process every frame.
+pipeline: sparse  # "sparse": stereo front end + rigid-rig VO (the method); "dense": ORB/SIFT + SGBM keyframe VO (baseline only).
+
+dataset:
+  name: kitti  # KITTI odometry loader (images are pre-rectified).
+  params:
+    root: /data/kitti  # Folder containing sequences/ and poses/.
+    sequence: "00"  # Sequence number; 00-10 have public ground truth.
+
+matcher:
+  name: orb  # Front end under test; override with --matcher sift.
+  params:
+    max_keypoints: 2000  # Keypoint budget, kept equal across extractors.
+    ratio: 0.8  # Lowe ratio-test threshold.
+    mutual_check: true  # Keep only mutual nearest neighbours.
+
+stereo_frontend:  # Used when pipeline is sparse: FAST + ORB stereo matching, KLT with circular L/R check.
+  name: fast_orb_klt
+  params:
+    max_features: 1500  # Target number of tracked stereo pairs.
+    replenish_fraction: 0.7  # Re-detect when tracks drop below this fraction of max_features (runtime knob).
+    fast_threshold: 15  # FAST corner threshold.
+    circular_tolerance_px: 1.0  # Closing error allowed in the circular check.
+    epipolar_tolerance_px: 1.5  # Row difference allowed between left and right.
+    stereo_matcher: klt  # FINAL  # orb (descriptor + ratio test) | klt (sub-pixel KLT along the epipolar line, L->R->L checked).
+    corner_score: min_eig  # FINAL  # fast | min_eig (Shi-Tomasi score: better-conditioned KLT windows).
+    fast_threshold_min: 7  # FINAL  # e.g. 5: low-threshold FAST top-up in grid cells the main threshold leaves empty.
+
+depth:
+  name: sgbm  # Fixed stereo depth source.
+  params:
+    num_disparities: 128  # fx*B is about 388 px*m, so this covers depths down to ~3 m.
+    block_size: 5  # Matching window.
+    min_depth: 3.0  # Matches the disparity range above.
+    max_depth: 40.0  # Far points constrain translation poorly; tune per dataset.
+
+odometry:
+  essential_threshold_px: 1.0  # Inlier threshold for the front-end quality metric.
+  stereo_sigma_px: 0.5  # Pixel/disparity noise for triangulation covariance (weights the LM).
+  sparse_point_anchor: fused  # Sparse only: previous (frame-to-frame) | birth (keep first 3D) | fused (inverse-covariance fusion).
+  anchor_param: inverse_depth  # FINAL  # Birth/fused anchors: xyz (Gaussian world point) | inverse_depth (1-D fusion on the birth ray).
+  anchor_pose_inflation: true  # FINAL  # Add the LM pose covariance to new point observations (stops over-confident anchors).
+  noise_model: adaptive  # FINAL  # fixed (stereo_sigma_px) | adaptive (re-estimated from whitened LM residuals).
+  max_depth_baselines: 0  # Depth gate for pose estimation in baselines (0 = off; heuristic baseline for covariance weighting).
+  realign_every: 5  # FINAL  # Re-align tracks >= realign_min_age frames old against their birth template every N frames (0 = off; 5 is a good value).
+  rig_mode: rigid  # rigid (one pose, both images) | independent (per-camera PnP, implied extrinsic logged) | averaged (SE(3) mean).
+  pose_method: pnp  # pnp (rig LM) | umeyama3d | mahalanobis3d | soft  (alternative estimators on the same RANSAC inliers).
+  ba_window: 5  # FINAL  # Sliding-window bundle adjustment over this many keyframes (0 = off; 5-7 typical).
+  ba_keyframe_every: 3  # Keyframe every N frames...
+  ba_min_translation_m: 3.0  # ...or after this much motion (car: ~1 m per frame).
+  pnp:
+    reprojection_error_px: 2.0  # PnP RANSAC inlier threshold.
+    iterations: 200  # PnP RANSAC iterations.
+    min_inliers: 15  # Below this, the frame counts as a tracking failure.
+    refine: lm  # none | opencv (cv2.solvePnPRefineLM) | lm (covariance-weighted rigid-rig LM, analytic Jacobians).
+    ransac: stereo  # FINAL  # opencv (solvePnPRansac, left image) | stereo (AP3P + MSAC on the (u_l, v_l, u_r) rig residual).
+    lm_pixel_sigma: null  # null = share stereo_sigma_px (one noise model); 1.0 reproduces the mid-report runs.
+  keyframe:
+    min_inliers: 100  # New keyframe when inliers drop below this.
+    max_translation_m: 3.0  # ...or after this much motion (car scale, ~1 m per frame).
+    max_rotation_deg: 10.0  # ...or this much rotation.
+    max_frames: 10  # ...or this many frames (1 s at 10 Hz).

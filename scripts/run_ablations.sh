@@ -4,6 +4,7 @@
 # Usage:
 #   KITTI_ROOT=~/datasets/kitti EUROC_ROOT=~/datasets/euroc/MH_01_easy SEQS="00 05 07" JOBS=4 scripts/run_ablations.sh
 #   KITTI_RECALIB=~/datasets/kitti_recalib/calib_{seq}.txt ...   # optional: Cvisic et al. 2021 recalibration (RQ3).
+#   FOLDERS="/data/wheelchair/lab_01 /data/wheelchair/corridor_02" ...  # optional: our D455 sequences (configs/wheelchair.yaml).
 #
 # Every run starts from REF = the mid-report proposal (sparse, fused xyz anchors, rigid-rig LM) with the shared
 # noise model, and changes ONE thing. Folder names under results/<sequence>/:
@@ -25,7 +26,15 @@
 #     abl_adaptive        adaptive noise model
 #     abl_realign5        birth-template re-alignment every 5 frames
 #     abl_klt_stereo      KLT stereo matching + Shi-Tomasi score + low-threshold top-up
-#     full                all upgrades together
+#     abl_ba5 / abl_ba7   sliding-window bundle adjustment over 5 / 7 keyframes
+#   Alternative estimators on the SAME RANSAC inliers (RQ2)
+#     abl_f2f             no anchors (landmarks re-triangulated every frame)
+#     abl_umeyama3d       unweighted 3D-3D alignment
+#     abl_mahalanobis3d   covariance-weighted 3D-3D alignment
+#     abl_soft            SOFT-style decoupling: R from the essential matrix, t from stereo
+#   Runtime
+#     abl_replenish050 / abl_replenish035   re-detect only below 50 % / 35 % of max_features (default 70 %)
+#     full                all upgrades together (= configs/final_*.yaml)
 #     full_recalib        full with the replacement KITTI calibration (only if KITTI_RECALIB is set)
 set -euo pipefail
 
@@ -42,7 +51,7 @@ unset PYTHONPATH
 REF="--pipeline sparse --anchor fused --refine lm"
 FULL="--set odometry.pnp.ransac=stereo --set odometry.anchor_param=inverse_depth --set odometry.anchor_pose_inflation=true \
 --set odometry.noise_model=adaptive --set odometry.realign_every=5 --set stereo_frontend.stereo_matcher=klt \
---set stereo_frontend.corner_score=min_eig --set stereo_frontend.fast_threshold_min=7"
+--set stereo_frontend.corner_score=min_eig --set stereo_frontend.fast_threshold_min=7 --set odometry.ba_window=5"
 variants=(
   "abl_ref|"
   "abl_mono|--set odometry.lm_right_residuals=false"
@@ -59,6 +68,14 @@ variants=(
   "abl_adaptive|--set odometry.noise_model=adaptive"
   "abl_realign5|--set odometry.realign_every=5"
   "abl_klt_stereo|--set stereo_frontend.stereo_matcher=klt --set stereo_frontend.corner_score=min_eig --set stereo_frontend.fast_threshold_min=7"
+  "abl_ba5|--set odometry.ba_window=5"
+  "abl_ba7|--set odometry.ba_window=7"
+  "abl_f2f|--anchor previous"
+  "abl_umeyama3d|--set odometry.pose_method=umeyama3d"
+  "abl_mahalanobis3d|--set odometry.pose_method=mahalanobis3d"
+  "abl_soft|--set odometry.pose_method=soft"
+  "abl_replenish050|--set stereo_frontend.replenish_fraction=0.5"
+  "abl_replenish035|--set stereo_frontend.replenish_fraction=0.35"
   "full|$FULL"
 )
 
@@ -75,6 +92,10 @@ for seq in $SEQS; do
   if [ -n "$KITTI_RECALIB" ]; then
     commands+=("$base $REF $FULL --set dataset.calib_file=$KITTI_RECALIB --run-name full_recalib > $RESULTS/logs/kitti_${seq}_full_recalib.log 2>&1")
   fi
+done
+FOLDERS=${FOLDERS:-}
+for folder in $FOLDERS; do
+  add_runs "folder_$(basename "$folder")" "uv run metricvision run configs/wheelchair.yaml --dataset-root $folder --output-dir $RESULTS --no-progress"
 done
 if [ -n "$EUROC_ROOT" ]; then
   add_runs euroc "uv run metricvision run configs/euroc.yaml --dataset-root $EUROC_ROOT --output-dir $RESULTS --no-progress"

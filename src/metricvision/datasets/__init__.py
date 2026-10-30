@@ -3,6 +3,7 @@
 from metricvision.datasets import (  # noqa: F401  # Imported for their registration side effect.
     euroc,
     kitti,
+    stereo_folder,
     synthetic,
 )
 from metricvision.datasets.base import DATASETS, StereoDataset  # Public API of the package.

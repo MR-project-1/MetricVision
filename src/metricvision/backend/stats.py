@@ -22,7 +22,6 @@ class FrameStats:
         pose_ms: 3D lifting + PnP time.
         depth_ms: Stereo depth time (non-zero only on keyframes).
         total_ms: Whole pipeline time for the frame, excluding measurement-only metrics.
-<<<<<<< HEAD
         vertical_disparity_median_px: Median of v_l - v_r over the tracked stereo pairs (sparse pipeline). In a
             perfectly rectified, rigid rig it is zero; a drift is a direct symptom of a changed extrinsic.
         vertical_disparity_mad_px: Robust spread (1.4826 MAD) of v_l - v_r.
@@ -34,8 +33,8 @@ class FrameStats:
         num_realigned: Tracks re-aligned against their birth template this frame.
         num_realign_dropped: Tracks dropped because re-alignment failed (occlusion or drift beyond tolerance).
         num_fused: Anchor observations fused this frame.
-=======
->>>>>>> origin/main
+        ba_ms: Keyframe bundle-adjustment time (0 when no keyframe was inserted).
+        num_ba_landmarks: Landmarks in the bundle-adjustment problem (0 when it did not run).
     """
 
     frame_index: int  # Position in sequence.
@@ -50,7 +49,6 @@ class FrameStats:
     pose_ms: float  # Pose-estimation runtime.
     depth_ms: float  # Depth runtime.
     total_ms: float  # End-to-end runtime.
-<<<<<<< HEAD
     vertical_disparity_median_px: float = float("nan")  # Rig-consistency signal (RQ3).
     vertical_disparity_mad_px: float = float("nan")  # Its robust spread.
     pose_sigma_trans_mm: float = float("nan")  # Pose uncertainty (translation).
@@ -61,8 +59,8 @@ class FrameStats:
     num_realigned: int = 0  # Re-aligned tracks.
     num_realign_dropped: int = 0  # Tracks dropped by re-alignment.
     num_fused: int = 0  # Fused anchor observations.
-=======
->>>>>>> origin/main
+    ba_ms: float = 0.0  # Bundle-adjustment time.
+    num_ba_landmarks: int = 0  # Bundle-adjustment problem size.
 
     def to_dict(self) -> dict[str, float | int | bool]:
         """Convert to a plain dictionary for CSV output.

@@ -1,49 +1,68 @@
 # MetricVision
-Feature extractors for visual odometry, measured end to end
+Metric stereo visual odometry with a rigid-rig constraint
 
-Benchmark visual odometry front ends (feature extraction + matching) inside one
-fixed stereo VO back end, so trajectory differences come from the extractor and
-nothing else.
- 
-Status (mid submission, Oct 2026): two stereo VO pipelines sharing one evaluation path:
+MetricVision estimates the metric 6-DoF motion of a calibrated stereo camera and treats the two cameras as **one
+rigid body**: every stereo observation constrains a single pose through the fixed calibrated extrinsic. The project
+asks three research questions:
 
-- **Sparse pipeline** (`pipeline: sparse`): FAST + ORB stereo matching along epipolar lines,
-  triangulation with first-order depth covariance, KLT tracking with a circular L/R check
-  (3D-2D correspondences per frame), PnP + RANSAC initial pose, and a covariance-weighted
-  **rigid-rig Levenberg-Marquardt** refinement with analytic Jacobians (left + right residuals).
-- **Dense pipeline** (`pipeline: dense`): pairwise ORB/SIFT matching against keyframes,
-  fixed SGBM stereo depth, PnP + RANSAC, with the same LM available as refinement.
+- **RQ1 (coupling):** how much drift does the rigid-rig coupling remove compared with left-only, independent
+  per-camera and loosely averaged estimation?
+- **RQ2 (uncertainty):** does covariance weighting beat depth-gating heuristics and 3D-3D alignment, and is the
+  predicted uncertainty statistically consistent (NEES)?
+- **RQ3 (fragility):** how sensitive is the rigid constraint to extrinsic/calibration error, and can it be detected?
 
-Evaluated with evo (ATE/RPE) and a port of the KITTI devkit (t_rel, r_rel) on KITTI 00,
-EuRoC MH_01 and a built-in synthetic sequence for smoke testing.
-SuperPoint+LightGlue, ALIKED+LightGlue, MASt3R, sliding-window bundle adjustment and the ROS 2 node come next.
- 
+## The pipeline
+
+```
+stereo frame ─► circular KLT tracking (constant-velocity seeded)                      frontend/stereo_klt.py
+            ─► RANSAC: OpenCV PnP or stereo AP3P-MSAC on (u_L, v_L, u_R)               backend/pose.py
+            ─► rigid-rig LM: 3-D residual, covariance-whitened, Huber, pose covariance backend/lm.py
+            ─► birth-template re-alignment of long tracks (drift correction)          frontend/alignment.py
+            ─► landmark anchors: fused XYZ or inverse depth, pose-uncertainty inflation backend/anchors.py
+            ─► sliding-window bundle adjustment over keyframes (Schur, oldest fixed)   backend/window_ba.py
+            ─► adaptive noise model; replenish with ORB or KLT stereo matching         backend/stereo_odometry.py
+```
+
+Every stage is a configuration switch, so each one can be ablated in isolation (`scripts/run_ablations.sh`).
+Alternative estimators for RQ2 run on the **same RANSAC inliers**: unweighted and Mahalanobis 3D-3D alignment and
+SOFT-style rotation/translation decoupling (`odometry.pose_method`). Rig baselines for RQ1/RQ3 are
+`odometry.rig_mode: independent | averaged`; the vertical disparity `v_L - v_R` and the implied extrinsic deviation are
+logged per frame. A dense ORB/SIFT + SGBM keyframe pipeline (`pipeline: dense`) is kept **as a baseline only**.
+
+Evaluation: evo ATE/RPE (frame-to-frame and over 1 s), the KITTI devkit metric, final/loop-closure position error,
+**frame-to-frame NEES/ANEES** of the predicted pose covariance, and paired per-segment statistics (Wilcoxon signed-rank +
+block-bootstrap CIs) between methods. External systems (libviso2, ORB-SLAM3, Basalt) are evaluated with the same code.
+
+Calibration and own data: ChArUco (or checkerboard) joint stereo calibration with uncertainty, RealSense D455 rosbag
+extraction (images, IMU, factory calibration) and a `stereo_folder` loader for the wheelchair sequences.
+
+Documentation: [docs/MetricVision_Method_Upgrades.md](docs/MetricVision_Method_Upgrades.md) (every method and switch),
+[docs/FINAL_DEVELOPMENT.md](docs/FINAL_DEVELOPMENT.md) (bundle adjustment, calibration, evaluation, alternatives),
+[report/mid_report_revised.pdf](report/mid_report_revised.pdf).
+
 ## Project layout
- 
+
 ```
 metricvision/
-├── pyproject.toml            # Dependencies and tool settings (uv, ruff, mypy, pytest)
-├── uv.lock                   # Exact dependency versions, shared by laptop and Jetson
-├── .python-version           # Python 3.10 (ROS 2 Humble and JetPack 6 both use it)
-├── .devcontainer/
-│   ├── laptop/               # x86_64 + CUDA image
-│   └── jetson/               # Jetson AGX Orin (L4T / JetPack 6) image
-├── configs/                  # One YAML per dataset
+├── configs/                  # kitti / euroc / synthetic / wheelchair (base) and final_* (all upgrades on), charuco_board
 ├── src/metricvision/
-│   ├── core/                 # Data types, SE(3) helpers (exp map), stereo triangulation + covariance, registry
-│   ├── datasets/             # StereoDataset ABC + EuRoC, KITTI, synthetic loaders
-│   ├── frontend/             # FeatureMatcher ABC + ORB, SIFT; StereoFrontend ABC + FAST/ORB/KLT  <- variable under test
-│   ├── depth/                # DepthEstimator ABC + SGBM (dense pipeline only)
-│   ├── backend/              # PnP + RANSAC, rigid-rig LM (lm.py), keyframe VO, frame-to-frame sparse VO
-│   ├── evaluation/           # Front-end metrics, ATE/RPE via evo, KITTI devkit metric, output writers
-│   ├── config.py             # YAML -> typed config
-│   ├── pipeline.py           # Runs one (sequence, front end) experiment
-│   └── cli.py                # `metricvision run` / `metricvision list`
-├── scripts/                  # run_experiments.sh (full matrix), make_report_assets.py (tables + figures)
-├── docs/                     # Mid report (Markdown + LaTeX), generated tables and figures
-└── tests/                    # Unit + end-to-end tests (no downloads needed)
+│   ├── core/                 # Types, SE(3), stereo triangulation + covariance, registry
+│   ├── calibration/          # ChArUco/checkerboard detection, joint stereo calibration with uncertainty, rectification
+│   ├── datasets/             # KITTI (calib override), EuRoC, stereo_folder (D455), synthetic (optional image noise)
+│   ├── frontend/             # Stereo KLT front end, warped-patch re-alignment; ORB/SIFT matchers (dense baseline)
+│   ├── depth/                # SGBM (dense baseline only)
+│   ├── backend/              # RANSAC, rig LM, anchors, sliding-window BA, alternative estimators, sparse + dense VO
+│   ├── evaluation/           # evo ATE/RPE, KITTI devkit, NEES consistency, paired statistics, writers
+│   ├── config.py, cli.py     # YAML -> typed config; `metricvision run ... --set section.key=value`
+│   └── pipeline.py           # Runs one experiment and writes results/<sequence>/<run>/
+├── scripts/                  # run_experiments.sh, run_ablations.sh, make_report_assets.py, compare_runs.py,
+│                             # evaluate_external.py, validate_methods.py, calibrate_charuco.py, calibrate_stereo.py,
+│                             # make_charuco_board.py, extract_rosbag.py, download_datasets.py
+├── report/                   # Revised mid report (LaTeX + PDF) and controlled-validation figures
+├── docs/                     # Method documentation, generated tables and figures
+└── tests/                    # 55 unit + end-to-end tests (no downloads needed)
 ```
- 
+
 ## Setup
  
 ### Option A: uv directly on the host
@@ -89,124 +108,91 @@ pipeline therefore converts camera poses to the body frame before evaluating
 and writing trajectories. KITTI images are already rectified, and its ground
 truth is in the left camera frame.
  
-## Running experiments
- 
-```bash
-metricvision list                                              # Show available components
-metricvision run configs/synthetic.yaml                        # Smoke test, no download
-metricvision run configs/euroc.yaml --dataset-root /data/euroc/MH_01_easy
-metricvision run configs/euroc.yaml --dataset-root /data/euroc/MH_01_easy --matcher sift
-metricvision run configs/kitti.yaml --dataset-root /data/kitti --max-frames 500
-metricvision run configs/kitti.yaml --dataset-root /data/kitti --pipeline sparse --refine lm --run-name sparse_lm
+## Datasets
+
 ```
-
-`--pipeline {dense,sparse}` picks the VO pipeline, `--refine {none,opencv,lm}` the pose
-refinement after PnP + RANSAC, and `--run-name` the output folder (use it for ablations so
-runs don't overwrite each other). The full mid-submission matrix (6 runs per sequence) and
-the report tables/figures are produced by:
-
-```bash
-KITTI_ROOT=/data/kitti EUROC_ROOT=/data/euroc/MH_01_easy JOBS=3 scripts/run_experiments.sh
+~/datasets/euroc/MH_01_easy/mav0/...     # ASL format, extracted
+~/datasets/kitti/sequences/00/...        # KITTI odometry grayscale + calibration
+~/datasets/kitti/poses/00.txt            # KITTI ground truth (sequences 00-10)
+~/datasets/wheelchair/lab_01/{left,right,calib.yaml}   # our D455 recordings (scripts/extract_rosbag.py)
 ```
- 
-Outside a container, prefix commands with `uv run`. `--matcher` keeps the
-shared parameters (`max_keypoints`, `ratio`, `mutual_check`), so the keypoint
-budget stays equal when you switch extractors.
- 
-Each run writes to `results/<sequence>/<run name>/` (the run name defaults to the front-end name):
- 
-| File | Contents |
-|---|---|
-| `summary.json` | ATE/RPE, tracking failures, mean matches, inlier ratio, runtimes, FPS |
-| `frame_stats.csv` | Per-frame matches, inliers, flags and timings (for plots) |
-| `trajectory.tum` | Body-frame trajectory, TUM format |
-| `trajectory.kitti` | Same trajectory, KITTI format |
- 
-To plot with evo (use `--save_plot out.pdf` inside containers without a display):
- 
-```bash
-evo_ape euroc /data/euroc/MH_01_easy/mav0/state_groundtruth_estimate0/data.csv \
-    results/euroc_MH_01_easy/orb/trajectory.tum --align --plot --plot_mode xy
-evo_ape kitti /data/kitti/poses/00.txt results/kitti_00/orb/trajectory.kitti --align --plot --plot_mode xz
-```
- 
-## Reproducing the mid-submission results
-
-Every number and figure in [docs/mid_report.pdf](docs/mid_report.pdf) comes from the commands
-below (run from the repository root). On the host, prefix `uv run ...` with `env -u PYTHONPATH`
-if ROS 2 is sourced in your shell.
-
-**1. Data (single sequences only, via HTTP range requests):**
 
 ```bash
 uv run --with remotezip python scripts/download_datasets.py kitti --sequence 00 --out ~/datasets/kitti
 uv run --with remotezip python scripts/download_datasets.py euroc --sequence MH_01_easy --out ~/datasets/euroc
 ```
 
-Any KITTI sequence `00`-`21` (ground truth for `00`-`10`) or EuRoC scene (`MH_0x_*`, `V1_0x_*`,
-`V2_0x_*`) works the same way; add `--dry-run` to see the download size first.
+EuRoC images are rectified on load and evaluated in the IMU body frame; KITTI is pre-rectified and evaluated in the
+left camera frame. `dataset.calib_file` loads a replacement KITTI calibration (e.g. Cvisic et al. 2021, `{seq}`
+placeholder) and `dataset.baseline_scale` injects a deliberate baseline error (RQ3).
 
-**2. Full experiment matrix (18 runs) and report tables/figures:**
-
-```bash
-KITTI_ROOT=~/datasets/kitti EUROC_ROOT=~/datasets/euroc/MH_01_easy JOBS=2 scripts/run_experiments.sh
-uv run python scripts/make_qualitative_figures.py --out docs/figures \
-    --config configs/kitti.yaml:$HOME/datasets/kitti:300 \
-    --config configs/euroc.yaml:$HOME/datasets/euroc/MH_01_easy:1200
-cd docs && tectonic mid_report.tex     # or: latexmk -pdf mid_report.tex
-```
-
-`run_experiments.sh` writes `results/<sequence>/<run>/` and regenerates `docs/tables/*` and
-`docs/figures/*` (trajectories, devkit error vs. length, APE vs. distance, runtime, per-frame).
-
-**3. One run on one scene** (the proposed configuration is the default in the configs:
-sparse pipeline needs `--pipeline sparse`; `--anchor fused --refine lm` are already the YAML defaults):
+## Our own data: RealSense D455
 
 ```bash
-# KITTI sequence 05, proposed method
-uv run metricvision run configs/kitti.yaml --dataset-root ~/datasets/kitti --sequence 05 \
-    --pipeline sparse --run-name sparse_fused_lm
-# EuRoC V1_02_medium (the scene is chosen by its folder)
-uv run metricvision run configs/euroc.yaml --dataset-root ~/datasets/euroc/V1_02_medium \
-    --pipeline sparse --run-name sparse_fused_lm
-# Any row of the results table: pick the pipeline, front end, anchoring and refinement
-uv run metricvision run configs/kitti.yaml --dataset-root ~/datasets/kitti \
-    --pipeline dense --matcher sift --refine lm --run-name dense_sift_lm
-uv run metricvision run configs/kitti.yaml --dataset-root ~/datasets/kitti \
-    --pipeline sparse --anchor previous --refine opencv --run-name sparse_f2f_opencv
-# Quick check on the first 500 frames
-uv run metricvision run configs/kitti.yaml --dataset-root ~/datasets/kitti --max-frames 500 --pipeline sparse
+uv run python scripts/make_charuco_board.py --out docs/charuco_board_A3.pdf          # print, measure the square size
+# Record with the IR emitter OFF (ros2 param set /camera/camera depth_module.emitter_enabled 0)
+uv sync --extra rosbag
+uv run python scripts/extract_rosbag.py --bag calib.bag --out ~/datasets/wheelchair/calib
+uv run python scripts/calibrate_charuco.py --frames ~/datasets/wheelchair/calib --board configs/charuco_board.yaml \
+    --out ~/datasets/wheelchair/calib.yaml --factory ~/datasets/wheelchair/calib/factory_calib.yaml
+uv run python scripts/extract_rosbag.py --bag lab_01.bag --out ~/datasets/wheelchair/lab_01 --calib ~/datasets/wheelchair/calib.yaml
+uv run metricvision run configs/final_wheelchair.yaml --dataset-root ~/datasets/wheelchair/lab_01 --run-name final
 ```
 
-| Table row | Flags |
+`calibrate_charuco.py --selftest` verifies the calibration on rendered views. The calibration report gives intrinsics,
+baseline and extrinsic rotation with 1-sigma uncertainties and the rectified vertical error. Sequences that start and
+end at the same marked spot report `loop_closure_error_m/_pct` (final translation error without ground truth).
+
+## Running
+
+```bash
+metricvision list                                                            # Registered components
+metricvision run configs/synthetic.yaml                                      # Smoke test (sparse rigid-rig VO)
+metricvision run configs/kitti.yaml --dataset-root ~/datasets/kitti --sequence 05 --run-name base
+metricvision run configs/final_kitti.yaml --dataset-root ~/datasets/kitti --run-name final   # all upgrades
+metricvision run configs/kitti.yaml --dataset-root ~/datasets/kitti \
+    --set odometry.ba_window=5 --set odometry.pnp.ransac=stereo --run-name my_variant         # any combination
+```
+
+`--set section.key=value` reaches every option (`odometry.*`, `odometry.pnp.*`, `stereo_frontend.*`, `dataset.*`, ...;
+values are YAML; unknown keys are rejected). Outside a container, prefix with `uv run`.
+
+Each run writes `results/<sequence>/<run>/`:
+
+| File | Contents |
 |---|---|
-| Dense ORB+SGBM, OpenCV-LM | `--pipeline dense --matcher orb --refine opencv` |
-| Dense ORB/SIFT+SGBM, our LM | `--pipeline dense --matcher orb\|sift --refine lm` |
-| Sparse f2f, PnP only / OpenCV-LM / rig-LM | `--pipeline sparse --anchor previous --refine none\|opencv\|lm` |
-| Sparse birth anchors, rig-LM | `--pipeline sparse --anchor birth --refine lm` |
-| Sparse fused anchors, OpenCV-LM / rig-LM (proposed) | `--pipeline sparse --anchor fused --refine opencv\|lm` |
+| `summary.json` | ATE, RPE (frame and 1 s), final error, loop-closure error, failures, runtimes, NEES/ANEES, vertical disparity, noise estimate, extrinsic deviation |
+| `frame_stats.csv` | Per-frame matches, inliers, timings (incl. BA), pose sigma, vertical disparity, re-alignment counts |
+| `pose_covariances.npz` | Per-frame 6x6 pose covariance and NEES (sparse pipeline) |
+| `trajectory.tum`, `trajectory.kitti` | Trajectory in the ground-truth frame |
 
-Each run prints its summary and writes `summary.json` (ATE/RPE, failures, timings),
-`frame_stats.csv`, `trajectory.tum` and `trajectory.kitti` to `results/<sequence>/<run name>/`.
-For the KITTI devkit metric of a single run:
+## Experiments for the report
 
 ```bash
-uv run python -c "from pathlib import Path; from metricvision.evaluation.kitti_metrics import *; \
-print(kitti_segment_errors(load_kitti_poses(Path('results/kitti_05/sparse_fused_lm/trajectory.kitti')), \
-load_kitti_poses(Path.home() / 'datasets/kitti/poses/05.txt')))"
+# Mid-report runs (exact reproduction: LM noise pinned to 1 px)
+KITTI_ROOT=~/datasets/kitti EUROC_ROOT=~/datasets/euroc/MH_01_easy JOBS=3 scripts/run_experiments.sh
+# One-factor ablations + alternatives + BA + full configuration (KITTI, EuRoC, optional D455 folders)
+RESULTS=results_abl SEQS="00 05 07" EUROC_ROOT=~/datasets/euroc/MH_01_easy JOBS=4 scripts/run_ablations.sh
+uv run python scripts/make_report_assets.py --results results_abl --out docs_abl \
+    --config "configs/kitti.yaml:$KITTI_ROOT" --config "configs/euroc.yaml:$EUROC_ROOT"
+uv run python scripts/compare_runs.py --results results_abl --reference abl_ref --out docs_abl/tables \
+    --config "configs/kitti.yaml:$KITTI_ROOT" --config "configs/euroc.yaml:$EUROC_ROOT"
+# External baselines (run them with loop closing off, then evaluate their trajectory files)
+uv run python scripts/evaluate_external.py --config configs/kitti.yaml:$KITTI_ROOT \
+    --trajectory orbslam3_00.txt --format kitti --name ext_orbslam3 --results results_abl
+# Controlled validation figures of the report
+uv run python scripts/validate_methods.py --out report/validation
 ```
-
-and for plots of a single run, the evo commands in "Running experiments" above.
 
 ## Design decisions
  
-**The front end is pairwise.** `FeatureMatcher.match(view_a, view_b)` returns
+**Dense baseline: the front end is pairwise.** `FeatureMatcher.match(view_a, view_b)` returns
 2D-2D correspondences. Sparse methods implement it through
 `SparseFeatureMatcher`, which caches each image's features by frame id, so a
 keyframe is processed once. Dense matchers such as MASt3R have no persistent
 keypoints and will implement `match` directly. Both plug into the same back end.
  
-**Depth comes from fixed SGBM.** The extractor only affects keyframe-to-frame
+**Dense baseline: depth comes from fixed SGBM.** The extractor only affects keyframe-to-frame
 matching and is never used for stereo matching. So each extractor is measured
 in exactly one place.
  
@@ -251,13 +237,18 @@ Each residual is whitened by `J_X Sigma_X J_X^T + sigma^2 I`, where `Sigma_X` is
 triangulation covariance, so distant points (sigma_Z ~ Z^2) are down-weighted. The tests
 check the Jacobians against finite differences and the covariance against Monte Carlo.
  
+**Bundle adjustment refines, it does not re-time.** Trajectories stay causal: each frame's pose is written when
+it is estimated (BA refines the current keyframe and the landmarks; past poses are not rewritten).
+
+**Comparisons share outlier rejection.** The alternative estimators (`pose_method`) and the rig modes reuse the same
+tracks and the same RANSAC inliers, so a difference in accuracy is due to the estimator alone.
+
 ## Checks
- 
-If ROS 2 is sourced in your shell, prefix these with `env -u PYTHONPATH` (ROS's pytest plugins leak into the venv otherwise).
+
+If ROS 2 is sourced in your shell, prefix these with `env -u PYTHONPATH`.
 
 ```bash
-uv run pytest            # Unit tests (Jacobians, covariance, devkit) + end-to-end synthetic runs of both pipelines
-uv run ruff check src tests
+uv run pytest            # 55 tests: Jacobians, covariance, RANSAC, anchors, BA, NEES, calibration, rosbag, end to end
+uv run ruff check src scripts tests
 uv run ruff format --check src tests
-uv run mypy src
 ```

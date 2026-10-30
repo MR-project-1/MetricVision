@@ -3,11 +3,7 @@
 from __future__ import annotations  # Postponed evaluation of type hints.
 
 from collections.abc import Mapping  # Input type hints.
-<<<<<<< HEAD
 from dataclasses import asdict, dataclass, field, fields, replace  # Immutable configs and copy-with-changes.
-=======
-from dataclasses import dataclass, field, replace  # Immutable configs and copy-with-changes.
->>>>>>> origin/main
 from pathlib import Path  # Filesystem paths.
 from typing import Any  # Loosely typed YAML content.
 
@@ -121,7 +117,7 @@ class ExperimentConfig:
             odometry=OdometryConfig.from_dict(data.get("odometry")),  # Defaults if missing.
             output_dir=Path(data.get("output_dir", "results")),  # Defaults to ./results.
             max_frames=int(max_frames) if max_frames is not None else None,  # None means "all frames".
-            pipeline=str(data.get("pipeline", "dense")),  # Dense by default.
+            pipeline=str(data.get("pipeline", "sparse")),  # The sparse rigid-rig pipeline is the method; dense is a baseline.
             stereo_frontend=ComponentConfig.from_dict(data.get("stereo_frontend") or {"name": "fast_orb_klt"}),  # Sparse front end.
             run_name=data.get("run_name"),  # Optional folder name.
         )
@@ -200,7 +196,6 @@ class ExperimentConfig:
         if run_name is not None:  # Name the output folder.
             config = replace(config, run_name=run_name)  # Set it.
         return config  # Updated copy (the original is untouched).
-<<<<<<< HEAD
 
     def with_settings(self, assignments: list[str] | tuple[str, ...]) -> ExperimentConfig:
         """Return a copy with generic ``section.key=value`` overrides applied (``--set`` on the command line).
@@ -251,5 +246,3 @@ class ExperimentConfig:
             else:
                 raise ValueError(f"Unknown setting '{key}'")
         return config  # Updated copy.
-=======
->>>>>>> origin/main

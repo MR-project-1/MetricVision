@@ -49,6 +49,12 @@ class AnchorState:
     inverse_depth_var: FloatArray
     birth_pose_cov: FloatArray
     age: np.ndarray
+    track_id: np.ndarray | None = None  # (N,) persistent identifiers (keyframe bundle adjustment); None = not tracked.
+
+    def __post_init__(self) -> None:
+        """Give every row an identifier (-1 = unassigned) so all fields have the same length."""
+        if self.track_id is None:
+            object.__setattr__(self, "track_id", np.full(self.points.shape[0], -1, dtype=np.int64))
 
     @classmethod
     def empty(cls) -> AnchorState:
@@ -85,16 +91,7 @@ class AnchorState:
         Returns:
             Selected state.
         """
-        return AnchorState(
-            self.points[index],
-            self.covariances[index],
-            self.birth_frame[index],
-            self.birth_left[index],
-            self.inverse_depth[index],
-            self.inverse_depth_var[index],
-            self.birth_pose_cov[index],
-            self.age[index],
-        )
+        return AnchorState(**{name: getattr(self, name)[index] for name in self.__dataclass_fields__})
 
     def concatenate(self, other: AnchorState) -> AnchorState:
         """Append another state.
@@ -105,16 +102,7 @@ class AnchorState:
         Returns:
             Combined state.
         """
-        return AnchorState(
-            np.vstack([self.points, other.points]),
-            np.concatenate([self.covariances, other.covariances]),
-            np.concatenate([self.birth_frame, other.birth_frame]),
-            np.vstack([self.birth_left, other.birth_left]),
-            np.concatenate([self.inverse_depth, other.inverse_depth]),
-            np.concatenate([self.inverse_depth_var, other.inverse_depth_var]),
-            np.concatenate([self.birth_pose_cov, other.birth_pose_cov]),
-            np.concatenate([self.age, other.age]),
-        )
+        return AnchorState(**{name: np.concatenate([getattr(self, name), getattr(other, name)]) for name in self.__dataclass_fields__})
 
     def replace(self, **changes: np.ndarray) -> AnchorState:
         """Return a copy with some fields replaced.

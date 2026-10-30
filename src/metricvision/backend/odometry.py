@@ -42,7 +42,6 @@ class OdometryConfig:
             (pure frame-to-frame), ``birth`` keeps each track's 3D point (in world coordinates) from the frame
             where it was first triangulated, so long tracks constrain many poses without chaining their errors;
             ``fused`` additionally fuses each new stereo observation into the anchor by inverse covariance.
-<<<<<<< HEAD
         anchor_param: Sparse pipeline: landmark model of birth/fused anchors, ``xyz`` (Gaussian world point) or
             ``inverse_depth`` (point on the birth ray, inverse depth fused in 1-D; faithful for far points).
         anchor_pose_inflation: Add the triangulating camera's pose uncertainty (LM covariance) to every new
@@ -60,8 +59,13 @@ class OdometryConfig:
         rig_mode: ``rigid`` (one pose, both images through the fixed baseline), ``independent`` (left and right
             camera poses estimated separately; the left one is reported and the implied extrinsic deviation
             is recorded) or ``averaged`` (the two independent estimates averaged on SE(3)).
-=======
->>>>>>> origin/main
+        pose_method: Sparse pipeline, rigid mode: estimator applied to the RANSAC inliers. ``pnp`` (the configured
+            PnP refinement, e.g. the rigid-rig LM), ``umeyama3d`` (unweighted 3D-3D alignment), ``mahalanobis3d``
+            (covariance-weighted 3D-3D) or ``soft`` (rotation from the essential matrix, translation from stereo).
+        ba_window: Sparse pipeline: keyframes in the sliding-window bundle adjustment (0 disables it; 5-7 typical).
+        ba_keyframe_every: New keyframe every N frames...
+        ba_min_translation_m: ...or after this much camera motion.
+        ba_iterations: Levenberg-Marquardt iterations per window optimisation.
     """
 
     pnp: PnPConfig = field(default_factory=PnPConfig)  # PnP settings.
@@ -72,7 +76,6 @@ class OdometryConfig:
     lm_right_residuals: bool = True  # Rigid-rig (stereo) residuals on/off.
     lm_covariance_weighting: bool = True  # Covariance whitening on/off.
     sparse_point_anchor: str = "previous"  # previous | birth | fused.
-<<<<<<< HEAD
     anchor_param: str = "xyz"  # xyz | inverse_depth.
     anchor_pose_inflation: bool = False  # Pose uncertainty into point covariance.
     noise_model: str = "fixed"  # fixed | adaptive.
@@ -83,6 +86,11 @@ class OdometryConfig:
     realign_min_age: int = 3  # Minimum track age for re-alignment.
     realign_max_shift_px: float = 2.0  # Re-alignment acceptance.
     rig_mode: str = "rigid"  # rigid | independent | averaged.
+    pose_method: str = "pnp"  # pnp | umeyama3d | mahalanobis3d | soft.
+    ba_window: int = 0  # Keyframe bundle-adjustment window (0 = off).
+    ba_keyframe_every: int = 3  # Keyframe period (frames).
+    ba_min_translation_m: float = 1.0  # ...or keyframe after this much motion.
+    ba_iterations: int = 6  # LM iterations per window optimisation.
 
     def __post_init__(self) -> None:
         """Validate option names.
@@ -94,13 +102,12 @@ class OdometryConfig:
             "anchor_param": ("xyz", "inverse_depth"),
             "noise_model": ("fixed", "adaptive"),
             "rig_mode": ("rigid", "independent", "averaged"),
+            "pose_method": ("pnp", "umeyama3d", "mahalanobis3d", "soft"),
         }  # Allowed values.
         for name, allowed in choices.items():  # Check each option.
             if getattr(self, name) not in allowed:
                 raise ValueError(f"odometry.{name} must be one of {allowed}, got '{getattr(self, name)}'")
         object.__setattr__(self, "noise_bounds_px", tuple(float(v) for v in self.noise_bounds_px))  # YAML lists -> tuple.
-=======
->>>>>>> origin/main
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any] | None) -> OdometryConfig:
@@ -341,16 +348,12 @@ class StereoVisualOdometry:
             disparity = self._camera.fx * self._camera.baseline / points_3d[:, 2]  # d = fx B / Z.
             covariances = triangulation_covariance(matches.points_a[valid], disparity, self._camera, self._config.stereo_sigma_px)  # (M, 3, 3).
         estimate = self._pose_estimator.estimate(  # Robust PnP (+ optional covariance-weighted LM).
-<<<<<<< HEAD
             points_3d,
             matches.points_b[valid].astype(np.float64),
             self._camera_matrix,
             prior,
             covariances=covariances,
             pixel_sigma=self._config.stereo_sigma_px,  # One noise model for triangulation covariance and LM weighting.
-=======
-            points_3d, matches.points_b[valid].astype(np.float64), self._camera_matrix, prior, covariances=covariances
->>>>>>> origin/main
         )
         pose_ms = _elapsed_ms(pose_start)  # Pose time.
 

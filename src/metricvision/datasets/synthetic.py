@@ -77,6 +77,7 @@ class SyntheticPlaneDataset(StereoDataset):
         vertical_period_frames: int = 40,
         frame_rate_hz: float = 20.0,
         seed: int = 0,
+        image_noise_std: float = 0.0,
     ) -> None:
         """Configure the synthetic sequence.
 
@@ -95,6 +96,8 @@ class SyntheticPlaneDataset(StereoDataset):
             vertical_period_frames: Period of the up/down motion, in frames.
             frame_rate_hz: Frame rate used to create timestamps.
             seed: Random seed for the texture.
+            image_noise_std: Standard deviation of additive Gaussian image noise (grey levels; 0 = noise-free).
+                Deterministic per frame, so runs stay reproducible; makes the back-end comparisons non-trivial.
         """
         self._num_frames = num_frames  # Sequence length.
         self._camera = StereoCamera(  # Ideal pinhole stereo pair.
@@ -110,6 +113,8 @@ class SyntheticPlaneDataset(StereoDataset):
         self._steps = (lateral_step, forward_step, np.radians(yaw_step_deg))  # Per-frame motion increments.
         self._vertical = (vertical_amplitude, vertical_period_frames)  # Sinusoidal bob parameters.
         self._dt = 1.0 / frame_rate_hz  # Time between frames.
+        self._noise = float(image_noise_std)  # Image noise level.
+        self._seed = int(seed)  # For per-frame noise.
         self._texture = _make_texture(2 * width, 2 * height, seed)  # Twice the image size so views stay on-texture.
         self._texture_from_image0 = np.array(  # Maps first-frame pixels to texture pixels (centre crop).
             [[1.0, 0.0, width / 2.0], [0.0, 1.0, height / 2.0], [0.0, 0.0, 1.0]], dtype=np.float64
@@ -191,9 +196,25 @@ class SyntheticPlaneDataset(StereoDataset):
         return StereoFrame(  # Assemble the frame.
             index=index,  # Position in the sequence.
             timestamp=index * self._dt,  # Evenly spaced times.
-            left=self._render(left_from_world),  # Left view.
-            right=self._render(right_from_left @ left_from_world),  # Right view.
+            left=self._noisy(self._render(left_from_world), index, 0),  # Left view.
+            right=self._noisy(self._render(right_from_left @ left_from_world), index, 1),  # Right view.
         )
+
+    def _noisy(self, image: np.ndarray, index: int, side: int) -> np.ndarray:
+        """Add deterministic Gaussian noise to a rendered image.
+
+        Args:
+            image: Rendered uint8 image.
+            index: Frame index.
+            side: 0 left, 1 right.
+
+        Returns:
+            Noisy uint8 image (unchanged when the noise level is zero).
+        """
+        if self._noise <= 0:
+            return image
+        rng = np.random.default_rng((self._seed, index, side))
+        return np.clip(image.astype(np.float32) + rng.normal(0.0, self._noise, image.shape), 0, 255).astype(np.uint8)
 
     def ground_truth(self) -> Trajectory:
         """Return the exact trajectory of the left camera.

@@ -23,7 +23,6 @@ class PnPConfig:
             ``"lm"`` (our covariance-weighted rigid-rig LM, using the right image too when available).
             Booleans are accepted for backward compatibility (True = "opencv").
         lm_iterations: Maximum LM iterations for ``refine="lm"``.
-<<<<<<< HEAD
         lm_pixel_sigma: Observation noise (pixels) assumed by the LM weighting. ``None`` (default) uses the
             odometry's stereo noise, so triangulation covariance and LM weighting share one noise model.
         lm_huber_delta: Huber threshold of the LM, in standard deviations (``inf`` disables the robust kernel).
@@ -31,10 +30,6 @@ class PnPConfig:
             ``"stereo"`` (minimal AP3P hypotheses scored on the rigid-rig stereo residual (u_l, v_l, u_r), so
             the rig model is enforced inside RANSAC; the motion prior is tested as the first hypothesis).
         ransac_seed: Seed of the stereo RANSAC sampler (runs are deterministic).
-=======
-        lm_pixel_sigma: Observation noise (pixels) assumed by the LM weighting.
-        lm_huber_delta: Huber threshold of the LM, in standard deviations.
->>>>>>> origin/main
     """
 
     reprojection_error_px: float = 2.0  # Inlier threshold.
@@ -43,7 +38,6 @@ class PnPConfig:
     min_inliers: int = 15  # Failure threshold.
     refine: bool | str = "opencv"  # Refinement method.
     lm_iterations: int = 20  # LM budget.
-<<<<<<< HEAD
     lm_pixel_sigma: float | None = None  # LM pixel noise (None = shared stereo noise model).
     lm_huber_delta: float = 2.0  # LM robust threshold.
     ransac: str = "opencv"  # opencv | stereo.
@@ -57,10 +51,6 @@ class PnPConfig:
         """
         if self.ransac not in ("opencv", "stereo"):  # Typo guard.
             raise ValueError(f"Unknown pnp.ransac '{self.ransac}'; use opencv or stereo")  # Clear error.
-=======
-    lm_pixel_sigma: float = 1.0  # LM pixel noise.
-    lm_huber_delta: float = 2.0  # LM robust threshold.
->>>>>>> origin/main
 
     @property
     def refine_method(self) -> str:
@@ -89,12 +79,9 @@ class PoseEstimate:
         inlier_mask: Boolean mask over the input correspondences.
         num_inliers: Number of RANSAC inliers.
         refined_inlier_mask: Inliers of the LM chi^2 test at the refined pose (only with ``refine="lm"``).
-<<<<<<< HEAD
         covariance: Pose covariance from the LM information matrix (only with ``refine="lm"``).
         whitened_sq_norms: Squared whitened LM residual per correspondence (NaN where not refined).
         residual_dof: Dimension of each LM residual (3 for stereo, 2 for mono).
-=======
->>>>>>> origin/main
     """
 
     success: bool  # Outcome flag.
@@ -102,12 +89,9 @@ class PoseEstimate:
     inlier_mask: BoolArray  # Per-correspondence inlier flags.
     num_inliers: int  # Inlier count.
     refined_inlier_mask: BoolArray | None = None  # Post-LM inliers, if LM ran.
-<<<<<<< HEAD
     covariance: FloatArray | None = None  # (6, 6) covariance of the left-perturbation delta of T_cam_ref (LM only).
     whitened_sq_norms: FloatArray | None = None  # (N,) squared whitened residuals at the LM solution (NaN = not used).
     residual_dof: int = 3  # Residual dimension of whitened_sq_norms.
-=======
->>>>>>> origin/main
 
     @classmethod
     def failure(cls, num_points: int) -> PoseEstimate:
@@ -132,10 +116,7 @@ class PnPPoseEstimator:
             config: PnP settings; defaults are used when omitted.
         """
         self._config = config or PnPConfig()  # Fall back to defaults.
-<<<<<<< HEAD
         self._rng = np.random.default_rng(self._config.ransac_seed)  # Deterministic stereo-RANSAC sampler.
-=======
->>>>>>> origin/main
 
     def estimate(
         self,
@@ -146,10 +127,7 @@ class PnPPoseEstimator:
         points_2d_right: FloatArray | None = None,
         baseline: float = 0.0,
         covariances: FloatArray | None = None,
-<<<<<<< HEAD
         pixel_sigma: float | None = None,
-=======
->>>>>>> origin/main
     ) -> PoseEstimate:
         """Solve PnP robustly, then optionally refine on inliers.
 
@@ -161,10 +139,7 @@ class PnPPoseEstimator:
             points_2d_right: Optional (N, 2) observations in the current right image (rigid-rig LM only).
             baseline: Stereo baseline in metres (needed with ``points_2d_right``).
             covariances: Optional (N, 3, 3) covariances of ``points_3d`` used to weight the LM.
-<<<<<<< HEAD
             pixel_sigma: Observation noise for the LM when ``config.lm_pixel_sigma`` is None (shared noise model).
-=======
->>>>>>> origin/main
 
         Returns:
             The pose estimate with its inlier mask.
@@ -174,7 +149,6 @@ class PnPPoseEstimator:
             return PoseEstimate.failure(num_points)
         object_points = np.ascontiguousarray(points_3d, dtype=np.float64)  # OpenCV wants contiguous float64.
         image_points = np.ascontiguousarray(points_2d, dtype=np.float64)  # Same for 2D points.
-<<<<<<< HEAD
         if self._config.ransac == "stereo":  # Rigid-rig minimal RANSAC.
             found = stereo_ransac(
                 object_points,
@@ -210,25 +184,6 @@ class PnPPoseEstimator:
             )
             if not ok or inliers is None or len(inliers) < self._config.min_inliers:  # Solver failed or support too weak.
                 return PoseEstimate.failure(num_points)  # Report failure.
-=======
-        use_guess = initial_guess is not None
-        rvec0, tvec0 = rvec_tvec_from_pose(initial_guess) if initial_guess is not None else (np.zeros((3, 1)), np.zeros((3, 1)))  # Prior or zeros.
-        ok, rvec, tvec, inliers = cv2.solvePnPRansac(  # Robust PnP.
-            object_points,  # 3D points in the reference frame.
-            image_points,  # 2D points in the current image.
-            camera_matrix,  # Intrinsics.
-            None,  # No distortion: images are rectified.
-            rvec=rvec0.copy(),  # Initial rotation (used only if use_guess).
-            tvec=tvec0.copy(),  # Initial translation (used only if use_guess).
-            useExtrinsicGuess=use_guess,  # Seed the iterative solver with the prior.
-            iterationsCount=self._config.iterations,  # RANSAC budget.
-            reprojectionError=self._config.reprojection_error_px,  # Inlier threshold.
-            confidence=self._config.confidence,  # RANSAC confidence.
-            flags=cv2.SOLVEPNP_ITERATIVE,  # Levenberg-Marquardt based solver.
-        )
-        if not ok or inliers is None or len(inliers) < self._config.min_inliers:  # Solver failed or support too weak.
-            return PoseEstimate.failure(num_points)  # Report failure.
->>>>>>> origin/main
         inlier_index = inliers.reshape(-1)  # OpenCV returns an (K, 1) index array.
         method = self._config.refine_method  # Which refinement to run.
         if method == "opencv":  # Polish the RANSAC pose using all inliers.
@@ -240,16 +195,10 @@ class PnPPoseEstimator:
         pose = pose_from_rvec_tvec(np.asarray(rvec, dtype=np.float64), np.asarray(tvec, dtype=np.float64))  # 4x4 T_cam_ref.
         refined_mask = None  # Only set by the LM path.
         if method == "lm":  # Covariance-weighted rigid-rig LM on the RANSAC inliers.
-<<<<<<< HEAD
             sigma = self._config.lm_pixel_sigma if self._config.lm_pixel_sigma is not None else (pixel_sigma or 1.0)  # Shared noise model.
             lm_config = LMConfig(  # Settings from the PnP config.
                 max_iterations=self._config.lm_iterations,
                 pixel_sigma=sigma,
-=======
-            lm_config = LMConfig(  # Settings from the PnP config.
-                max_iterations=self._config.lm_iterations,
-                pixel_sigma=self._config.lm_pixel_sigma,
->>>>>>> origin/main
                 huber_delta=self._config.lm_huber_delta,
             )
             result = refine_pose_lm(  # Analytic-Jacobian LM.
@@ -265,7 +214,6 @@ class PnPPoseEstimator:
             pose = result.camera_from_reference  # Refined T_cam_ref.
             refined_mask = np.zeros(num_points, dtype=bool)  # Map LM inliers back to all correspondences.
             refined_mask[inlier_index[result.inlier_mask]] = True  # RANSAC inlier and chi^2 inlier.
-<<<<<<< HEAD
             sq_norms = np.full(num_points, np.nan)  # Whitened residuals mapped back to all correspondences.
             if result.whitened_sq_norms is not None:  # Available from the LM.
                 sq_norms[inlier_index] = result.whitened_sq_norms  # RANSAC inliers only.
@@ -380,6 +328,3 @@ def stereo_ransac(
     if best_pose is None or best_inliers.size < config.min_inliers:  # Not enough support.
         return None  # Failure.
     return best_pose, best_inliers  # Best hypothesis.
-=======
-        return PoseEstimate(True, pose, mask, int(inlier_index.size), refined_mask)  # Successful estimate.
->>>>>>> origin/main
