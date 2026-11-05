@@ -107,3 +107,56 @@ def relative_nees(
         ),
         nees,
     )
+
+
+def window_nees(
+    records: Sequence[tuple[int, int, FloatArray, FloatArray, FloatArray]],
+    reference: Trajectory,
+    timestamps: Sequence[float],
+    max_time_diff_s: float = 0.01,
+) -> tuple[Consistency, FloatArray]:
+    """NEES of each bundle-adjusted window: newest keyframe relative to the (fixed) oldest keyframe.
+
+    With the oldest keyframe as gauge, the marginal covariance of the newest pose is the covariance of the relative
+    motion T_new_old = T_new_world T_world_old (left perturbation), so the same test as ``relative_nees`` applies over
+    the window. Valid for ``ba_gauge: fix`` (with a prior the covariance also contains the oldest pose's uncertainty).
+
+    Args:
+        records: (oldest index, newest index, T_cw oldest, T_cw newest, 6x6 covariance) per optimisation.
+        reference: Ground-truth T_world_cam in the camera frame.
+        timestamps: Frame timestamps (indexable by frame index).
+        max_time_diff_s: Association tolerance.
+
+    Returns:
+        Summary and per-record NEES.
+    """
+    ref_t = np.asarray(reference.timestamps)
+    nees = np.full(len(records), np.nan)
+    if ref_t.size == 0:
+        return Consistency(float("nan"), float("nan"), float("nan"), float("nan"), 0), nees
+
+    def lookup(t: float) -> FloatArray | None:
+        """Nearest ground-truth pose in time."""
+        j = int(np.argmin(np.abs(ref_t - t)))
+        return reference.poses[j] if abs(ref_t[j] - t) <= max_time_diff_s else None
+
+    for i, (old, new, cw_old, cw_new, cov) in enumerate(records):
+        gt_old, gt_new = lookup(timestamps[old]), lookup(timestamps[new])
+        if gt_old is None or gt_new is None or not np.isfinite(cov).all():
+            continue
+        rel_est = cw_new @ invert_pose(cw_old)  # T_new_old.
+        rel_gt = invert_pose(gt_new) @ gt_old
+        delta = rel_est @ invert_pose(rel_gt)
+        rvec, _ = cv2.Rodrigues(delta[:3, :3])
+        err = np.concatenate([delta[:3, 3], rvec.ravel()])
+        try:
+            nees[i] = float(err @ np.linalg.solve(cov, err))
+        except np.linalg.LinAlgError:
+            continue
+    valid = nees[np.isfinite(nees)]
+    if valid.size == 0:
+        return Consistency(float("nan"), float("nan"), float("nan"), float("nan"), 0), nees
+    return (
+        Consistency(float(np.mean(valid)), float(np.median(valid)), float(np.mean(valid) / 6.0), float(np.mean(valid > CHI2_6_95)), int(valid.size)),
+        nees,
+    )

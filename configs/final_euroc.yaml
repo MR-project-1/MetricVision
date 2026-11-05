@@ -54,12 +54,14 @@ odometry:
   ba_window: 5  # FINAL  # Sliding-window bundle adjustment over this many keyframes (0 = off; 5-7 typical).
   ba_keyframe_every: 3  # Keyframe every N frames...
   ba_min_translation_m: 0.3  # ...or after this much motion (MAV, indoor).
+  ba_solver: numpy  # numpy (own Schur LM) | gtsam (GTSAM factor graph, GenericStereoFactor3D; --extra industrial).
+  ba_gauge: fix  # gtsam: fix (oldest keyframe constant) | prior (tied to its marginal: approximate marginalisation).
   pnp:
     reprojection_error_px: 2.0  # PnP RANSAC inlier threshold.
     iterations: 200  # PnP RANSAC iterations.
     min_inliers: 15  # Below this, the frame counts as a tracking failure.
     refine: lm  # none | opencv (cv2.solvePnPRefineLM) | lm (covariance-weighted rigid-rig LM, analytic Jacobians).
-    ransac: stereo  # FINAL  # opencv (solvePnPRansac, left image) | stereo (AP3P + MSAC on the (u_l, v_l, u_r) rig residual).
+    ransac: stereo  # FINAL  # opencv | stereo (AP3P + MSAC on the rig residual) | colmap_rig (pycolmap GP3P LO-RANSAC).
     lm_pixel_sigma: null  # null = share stereo_sigma_px (one noise model); 1.0 reproduces the mid-report runs.
   keyframe:
     min_inliers: 100  # New keyframe when inliers drop below this.

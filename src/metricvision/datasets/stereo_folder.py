@@ -4,7 +4,8 @@ Layout (written by ``scripts/extract_rosbag.py``)::
 
     <root>/left/<timestamp_ns>.png
     <root>/right/<timestamp_ns>.png
-    <root>/calib.yaml          RawStereoCalib (scripts/calibrate_charuco.py, or factory_calib.yaml from the bag)
+    <root>/calib.yaml          RawStereoCalib (scripts/import_calibration.py from MC-Calib/Kalibr, calibrate_charuco.py,
+                               or factory_calib.yaml from the bag); MC-Calib and Kalibr files are also read directly
     <root>/groundtruth.tum     optional: "t x y z qx qy qz qw" of the (unrectified) left camera
 
 Images are rectified on load with the calibration, unless ``already_rectified`` is set (the D455 IR streams
@@ -21,7 +22,8 @@ import cv2  # Image IO.
 import numpy as np  # Arrays.
 from scipy.spatial.transform import Rotation  # Quaternions.
 
-from metricvision.calibration.camera import RawStereoCalib, Rectifier  # Calibration + rectification.
+from metricvision.calibration.camera import Rectifier  # Rectification.
+from metricvision.calibration.importers import load_calibration  # Our YAML, MC-Calib or Kalibr.
 from metricvision.core.geometry import invert_pose, make_pose  # Poses.
 from metricvision.core.types import FloatArray, StereoCamera, StereoFrame, Trajectory  # Shared types.
 from metricvision.datasets.base import DATASETS, StereoDataset  # Registry.
@@ -39,6 +41,7 @@ class StereoFolderDataset(StereoDataset):
         start: int = 0,
         stride: int = 1,
         baseline_scale: float = 1.0,
+        calib_options: dict | None = None,
     ) -> None:
         """Index the images and prepare rectification.
 
@@ -49,6 +52,8 @@ class StereoFolderDataset(StereoDataset):
             start: First frame to use.
             stride: Use every N-th frame (e.g. 2 to emulate 15 Hz from 30 Hz).
             baseline_scale: Multiplies the baseline (deliberate extrinsic error; 1 = off).
+            calib_options: Options for a non-native calibration file, e.g. MC-Calib ``{left: 0, right: 1,
+                pose_convention: cam_to_ref}`` (prefer converting once with ``scripts/import_calibration.py``).
 
         Raises:
             FileNotFoundError: If images or calibration are missing.
@@ -57,7 +62,7 @@ class StereoFolderDataset(StereoDataset):
         calib_path = Path(calib).expanduser() if calib else self._root / "calib.yaml"
         if not calib_path.is_file():
             raise FileNotFoundError(f"Missing calibration {calib_path}")
-        raw = RawStereoCalib.from_yaml(str(calib_path))
+        raw = load_calibration(calib_path, **(calib_options or {}))  # Format detected from the file.
         lefts = sorted((self._root / "left").glob("*.png"))
         rights = {p.name: p for p in (self._root / "right").glob("*.png")}
         pairs = [(p, rights[p.name]) for p in lefts if p.name in rights][start::stride]

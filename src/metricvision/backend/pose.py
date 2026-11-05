@@ -28,7 +28,10 @@ class PnPConfig:
         lm_huber_delta: Huber threshold of the LM, in standard deviations (``inf`` disables the robust kernel).
         ransac: ``"opencv"`` (cv2.solvePnPRansac with the iterative solver, inliers judged on the left image) or
             ``"stereo"`` (minimal AP3P hypotheses scored on the rigid-rig stereo residual (u_l, v_l, u_r), so
-            the rig model is enforced inside RANSAC; the motion prior is tested as the first hypothesis).
+            the rig model is enforced inside RANSAC; the motion prior is tested as the first hypothesis) or
+            ``"colmap_rig"`` (COLMAP's generalized absolute pose for multi-camera rigs: GP3P + LO-RANSAC + refinement,
+            left and right as two cameras of one rig; needs ``pycolmap``). A correspondence is an inlier only if both
+            its left and right observations are.
         ransac_seed: Seed of the stereo RANSAC sampler (runs are deterministic).
     """
 
@@ -40,7 +43,7 @@ class PnPConfig:
     lm_iterations: int = 20  # LM budget.
     lm_pixel_sigma: float | None = None  # LM pixel noise (None = shared stereo noise model).
     lm_huber_delta: float = 2.0  # LM robust threshold.
-    ransac: str = "opencv"  # opencv | stereo.
+    ransac: str = "opencv"  # opencv | stereo | colmap_rig.
     ransac_seed: int = 0  # Deterministic sampling.
 
     def __post_init__(self) -> None:
@@ -49,8 +52,8 @@ class PnPConfig:
         Raises:
             ValueError: If ``ransac`` is unknown.
         """
-        if self.ransac not in ("opencv", "stereo"):  # Typo guard.
-            raise ValueError(f"Unknown pnp.ransac '{self.ransac}'; use opencv or stereo")  # Clear error.
+        if self.ransac not in ("opencv", "stereo", "colmap_rig"):  # Typo guard.
+            raise ValueError(f"Unknown pnp.ransac '{self.ransac}'; use opencv, stereo or colmap_rig")  # Clear error.
 
     @property
     def refine_method(self) -> str:
@@ -149,7 +152,20 @@ class PnPPoseEstimator:
             return PoseEstimate.failure(num_points)
         object_points = np.ascontiguousarray(points_3d, dtype=np.float64)  # OpenCV wants contiguous float64.
         image_points = np.ascontiguousarray(points_2d, dtype=np.float64)  # Same for 2D points.
-        if self._config.ransac == "stereo":  # Rigid-rig minimal RANSAC.
+        if self._config.ransac == "colmap_rig":  # COLMAP generalized (multi-camera) absolute pose.
+            found = colmap_rig_ransac(
+                object_points,
+                image_points,
+                None if points_2d_right is None else np.asarray(points_2d_right, dtype=np.float64),
+                camera_matrix,
+                baseline,
+                self._config,
+            )
+            if found is None:
+                return PoseEstimate.failure(num_points)
+            ransac_pose, inliers = found
+            rvec, tvec = rvec_tvec_from_pose(ransac_pose)
+        elif self._config.ransac == "stereo":  # Rigid-rig minimal RANSAC.
             found = stereo_ransac(
                 object_points,
                 image_points,
@@ -328,3 +344,76 @@ def stereo_ransac(
     if best_pose is None or best_inliers.size < config.min_inliers:  # Not enough support.
         return None  # Failure.
     return best_pose, best_inliers  # Best hypothesis.
+
+
+def colmap_rig_ransac(
+    points_3d: FloatArray,
+    points_left: FloatArray,
+    points_right: FloatArray | None,
+    camera_matrix: FloatArray,
+    baseline: float,
+    config: PnPConfig,
+) -> tuple[FloatArray, np.ndarray] | None:
+    """Robust rig pose with COLMAP: generalized P3P hypotheses, LO-RANSAC and non-linear refinement.
+
+    The rectified stereo pair is a two-camera rig: cam_from_rig is the identity for the left camera and a translation
+    by -B along x for the right one. Every correspondence contributes one ray per camera (2-D error per image, so v_R
+    is part of the inlier test here; the rig LM that follows uses the 3-D residual without it).
+
+    Args:
+        points_3d: (N, 3) reference-frame points.
+        points_left: (N, 2) left observations.
+        points_right: (N, 2) right observations or None (then a one-camera rig: ordinary absolute pose).
+        camera_matrix: Rectified intrinsics.
+        baseline: Stereo baseline in metres.
+        config: Threshold, iteration budget, confidence, minimum inliers, seed.
+
+    Returns:
+        (T_cur_ref, inlier indices) or None.
+
+    Raises:
+        ImportError: If pycolmap is not installed.
+    """
+    try:
+        import pycolmap  # noqa: PLC0415  # Optional dependency.
+    except ImportError as error:  # pragma: no cover - environment dependent.
+        raise ImportError("pnp.ransac=colmap_rig needs pycolmap: `uv sync --extra industrial` (or pip install pycolmap)") from error
+    n = points_3d.shape[0]
+    if n < 4:
+        return None
+    fx, fy, cx, cy = camera_matrix[0, 0], camera_matrix[1, 1], camera_matrix[0, 2], camera_matrix[1, 2]
+    camera = pycolmap.Camera(model="PINHOLE", width=int(2 * cx), height=int(2 * cy), params=[fx, fy, cx, cy])
+    cams_from_rig = [pycolmap.Rigid3d()]
+    observations, camera_idxs = [points_left], [0] * n
+    if points_right is not None:
+        cams_from_rig.append(pycolmap.Rigid3d(pycolmap.Rotation3d(np.eye(3)), np.array([-baseline, 0.0, 0.0])))
+        observations.append(points_right)
+        camera_idxs += [1] * n
+    options = pycolmap.RANSACOptions(
+        max_error=float(config.reprojection_error_px),
+        confidence=float(config.confidence),
+        min_num_trials=10,
+        max_num_trials=int(max(config.iterations, 10)),
+        random_seed=int(config.ransac_seed),
+    )
+    result = pycolmap.estimate_and_refine_generalized_absolute_pose(
+        np.vstack(observations),
+        np.vstack([points_3d] * len(observations)),
+        camera_idxs,
+        cams_from_rig,
+        [camera] * len(observations),
+        estimation_options=options,
+    )
+    if result is None:
+        return None
+    mask = np.asarray(result["inlier_mask"], dtype=bool).reshape(len(observations), n).all(axis=0)  # Both images agree.
+    if mask.sum() < config.min_inliers:
+        return None
+    return _rigid_to_pose(result["rig_from_world"]), np.flatnonzero(mask)
+
+
+def _rigid_to_pose(rigid) -> FloatArray:  # noqa: ANN001
+    """4x4 matrix of a pycolmap Rigid3d (3x4 ``matrix()``)."""
+    pose = np.eye(4)
+    pose[:3, :] = np.asarray(rigid.matrix(), dtype=np.float64)
+    return pose

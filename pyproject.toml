@@ -15,6 +15,11 @@ dependencies = [
 
 [project.optional-dependencies]
 rosbag = ["rosbags>=0.9"]  # Only for scripts/extract_rosbag.py (RealSense D455 recordings).
+industrial = [  # Optional industrial-standard back ends (pure-Python fallbacks remain the default).
+    "gtsam>=4.2",  # odometry.ba_solver=gtsam (GenericStereoFactor3D window BA, Marginals).
+    "pycolmap>=3.11",  # pnp.ransac=colmap_rig (generalized absolute pose, LO-RANSAC).
+    "pyceres>=2.3",  # Ceres cross-check of the rig LM (tests).
+]
 
 [project.scripts]
 metricvision = "metricvision.cli:main"  # Installs a `metricvision` command that calls metricvision.cli.main().

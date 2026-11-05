@@ -106,7 +106,12 @@ class SparseStereoOdometry:
             iterations=self._config.ba_iterations,
             huber_delta=self._config.pnp.lm_huber_delta if np.isfinite(self._config.pnp.lm_huber_delta) else 1e9,
         )
-        self._ba = SlidingWindowBA(ba_config, self._camera_matrix, camera.baseline)
+        if self._config.ba_solver == "gtsam":  # Industrial-standard factor-graph back end (optional dependency).
+            from metricvision.backend.gtsam_window import GtsamWindowBA  # noqa: PLC0415  # Imported only when selected.
+
+            self._ba: SlidingWindowBA = GtsamWindowBA(ba_config, self._camera_matrix, camera.baseline, gauge=self._config.ba_gauge)
+        else:
+            self._ba = SlidingWindowBA(ba_config, self._camera_matrix, camera.baseline)
         if self._config.sparse_point_anchor not in ("previous", "birth", "fused"):  # Typo guard.
             raise ValueError(f"sparse_point_anchor must be 'previous', 'birth' or 'fused', got '{self._config.sparse_point_anchor}'")
         self.reset()  # Initialise state.
@@ -157,12 +162,23 @@ class SparseStereoOdometry:
         """
         return self._pose_covs  # For consistency (NEES) evaluation.
 
+    @property
+    def ba_records(self) -> list[tuple[int, int, FloatArray, FloatArray, FloatArray]]:
+        """Return one record per bundle adjustment: oldest and newest keyframe indices, their optimised T_cam_world
+        and the marginal covariance of the newest pose (left perturbation, oldest keyframe as gauge).
+
+        Returns:
+            Records for window-level consistency (``evaluation.consistency.window_nees``).
+        """
+        return self._ba_records
+
     def reset(self) -> None:
         """Forget all state before a new sequence."""
         self._frontend.reset()  # Front-end state.
         self._ba.reset()  # Keyframe window.
         self._next_track_id = 0  # Persistent track identifiers.
         self._pose_covs: list[FloatArray | None] = []  # Per-frame pose covariance.
+        self._ba_records: list[tuple[int, int, FloatArray, FloatArray, FloatArray]] = []  # (oldest, newest, T_cw old, T_cw new, cov).
         self._previous: tuple[ImageArray, ImageArray] | None = None  # Previous (left, right) images.
         self._tracks = StereoTracks.empty()  # Pairs in the previous frame.
         self._state = AnchorState.empty()  # Per-track anchors (rows match self._tracks).
@@ -597,6 +613,17 @@ class SparseStereoOdometry:
             self._update_noise(estimate, inliers)  # Adaptive noise model.
             ba_start = time.perf_counter()
             pose, state, ok, ba_landmarks = self._bundle_adjust(frame, survivors, state, pose)  # Keyframe window.
+            if ba_landmarks and self._ba.newest_covariance is not None:  # Window consistency record (oldest KF fixed).
+                window = self._ba.keyframes
+                self._ba_records.append(
+                    (
+                        window[0].frame_index,
+                        window[-1].frame_index,
+                        window[0].camera_from_world.copy(),
+                        window[-1].camera_from_world.copy(),
+                        self._ba.newest_covariance.copy(),
+                    )
+                )
             survivors, state = survivors.subset(ok), state.subset(ok)
             ba_ms = _elapsed_ms(ba_start)
         else:  # Tracking failure.

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Method ablations of the sparse rigid-rig pipeline (one factor at a time, then the full proposal).
 #
-# Usage:
+# Usage (abl_ba5_gtsam*, abl_ransac_colmap need `uv sync --extra industrial`; they are skipped otherwise):
 #   KITTI_ROOT=~/datasets/kitti EUROC_ROOT=~/datasets/euroc/MH_01_easy SEQS="00 05 07" JOBS=4 scripts/run_ablations.sh
 #   KITTI_RECALIB=~/datasets/kitti_recalib/calib_{seq}.txt ...   # optional: Cvisic et al. 2021 recalibration (RQ3).
 #   FOLDERS="/data/wheelchair/lab_01 /data/wheelchair/corridor_02" ...  # optional: our D455 sequences (configs/wheelchair.yaml).
@@ -27,6 +27,8 @@
 #     abl_realign5        birth-template re-alignment every 5 frames
 #     abl_klt_stereo      KLT stereo matching + Shi-Tomasi score + low-threshold top-up
 #     abl_ba5 / abl_ba7   sliding-window bundle adjustment over 5 / 7 keyframes
+#     abl_ba5_gtsam       the same window solved with GTSAM (GenericStereoFactor3D); abl_ba5_gtsam_prior: marginal prior gauge
+#     abl_ransac_colmap   COLMAP generalized absolute pose (GP3P LO-RANSAC, stereo pair as a 2-camera rig)
 #   Alternative estimators on the SAME RANSAC inliers (RQ2)
 #     abl_f2f             no anchors (landmarks re-triangulated every frame)
 #     abl_umeyama3d       unweighted 3D-3D alignment
@@ -70,6 +72,9 @@ variants=(
   "abl_klt_stereo|--set stereo_frontend.stereo_matcher=klt --set stereo_frontend.corner_score=min_eig --set stereo_frontend.fast_threshold_min=7"
   "abl_ba5|--set odometry.ba_window=5"
   "abl_ba7|--set odometry.ba_window=7"
+  "abl_ba5_gtsam|--set odometry.ba_window=5 --set odometry.ba_solver=gtsam"
+  "abl_ba5_gtsam_prior|--set odometry.ba_window=5 --set odometry.ba_solver=gtsam --set odometry.ba_gauge=prior"
+  "abl_ransac_colmap|--set odometry.pnp.ransac=colmap_rig"
   "abl_f2f|--anchor previous"
   "abl_umeyama3d|--set odometry.pose_method=umeyama3d"
   "abl_mahalanobis3d|--set odometry.pose_method=mahalanobis3d"
@@ -80,9 +85,14 @@ variants=(
 )
 
 commands=()
+HAVE_GTSAM=$(uv run python -c "import gtsam" >/dev/null 2>&1 && echo 1 || echo 0)  # Optional industrial back ends.
+HAVE_PYCOLMAP=$(uv run python -c "import pycolmap" >/dev/null 2>&1 && echo 1 || echo 0)
 add_runs() {  # $1 = tag, $2 = base command
   for v in "${variants[@]}"; do
     name=${v%%|*}; extra=${v#*|}
+    if [[ $name == *gtsam* && $HAVE_GTSAM == 0 ]] || [[ $name == *colmap* && $HAVE_PYCOLMAP == 0 ]]; then
+      echo "skipping $name (uv sync --extra industrial)"; continue
+    fi
     commands+=("$2 $REF $extra --run-name $name > $RESULTS/logs/${1}_${name}.log 2>&1")
   done
 }

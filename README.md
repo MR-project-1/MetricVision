@@ -33,11 +33,18 @@ Evaluation: evo ATE/RPE (frame-to-frame and over 1 s), the KITTI devkit metric, 
 **frame-to-frame NEES/ANEES** of the predicted pose covariance, and paired per-segment statistics (Wilcoxon signed-rank +
 block-bootstrap CIs) between methods. External systems (libviso2, ORB-SLAM3, Basalt) are evaluated with the same code.
 
-Calibration and own data: ChArUco (or checkerboard) joint stereo calibration with uncertainty, RealSense D455 rosbag
-extraction (images, IMU, factory calibration) and a `stereo_folder` loader for the wheelchair sequences.
+Calibration and own data: MC-Calib and Kalibr import (pose convention verified on real images), ChArUco/checkerboard
+joint stereo calibration with uncertainty, RealSense D455 rosbag extraction (images, IMU, factory calibration) and a
+`stereo_folder` loader for the wheelchair sequences.
+
+Industrial standards (optional, `uv sync --extra industrial`): **GTSAM** window bundle adjustment with
+`GenericStereoFactor3D` (the identical 3-D stereo residual) and marginal covariances (`odometry.ba_solver: gtsam`),
+**COLMAP** generalized absolute pose (GP3P LO-RANSAC with the stereo pair as a 2-camera rig, `pnp.ransac: colmap_rig`),
+and a **Ceres** cross-check of the rig LM. See [docs/INDUSTRIAL_STANDARDS.md](docs/INDUSTRIAL_STANDARDS.md).
 
 Documentation: [docs/MetricVision_Method_Upgrades.md](docs/MetricVision_Method_Upgrades.md) (every method and switch),
 [docs/FINAL_DEVELOPMENT.md](docs/FINAL_DEVELOPMENT.md) (bundle adjustment, calibration, evaluation, alternatives),
+[docs/INDUSTRIAL_STANDARDS.md](docs/INDUSTRIAL_STANDARDS.md) (GTSAM, COLMAP, Ceres, MC-Calib/Kalibr),
 [report/mid_report_revised.pdf](report/mid_report_revised.pdf).
 
 ## Project layout
@@ -47,20 +54,20 @@ metricvision/
 ├── configs/                  # kitti / euroc / synthetic / wheelchair (base) and final_* (all upgrades on), charuco_board
 ├── src/metricvision/
 │   ├── core/                 # Types, SE(3), stereo triangulation + covariance, registry
-│   ├── calibration/          # ChArUco/checkerboard detection, joint stereo calibration with uncertainty, rectification
+│   ├── calibration/          # MC-Calib/Kalibr import, ChArUco/checkerboard calibration with uncertainty, (fisheye) rectification
 │   ├── datasets/             # KITTI (calib override), EuRoC, stereo_folder (D455), synthetic (optional image noise)
 │   ├── frontend/             # Stereo KLT front end, warped-patch re-alignment; ORB/SIFT matchers (dense baseline)
 │   ├── depth/                # SGBM (dense baseline only)
-│   ├── backend/              # RANSAC, rig LM, anchors, sliding-window BA, alternative estimators, sparse + dense VO
+│   ├── backend/              # RANSAC (own + COLMAP rig), rig LM, anchors, window BA (NumPy + GTSAM), alternatives, VO
 │   ├── evaluation/           # evo ATE/RPE, KITTI devkit, NEES consistency, paired statistics, writers
 │   ├── config.py, cli.py     # YAML -> typed config; `metricvision run ... --set section.key=value`
 │   └── pipeline.py           # Runs one experiment and writes results/<sequence>/<run>/
 ├── scripts/                  # run_experiments.sh, run_ablations.sh, make_report_assets.py, compare_runs.py,
-│                             # evaluate_external.py, validate_methods.py, calibrate_charuco.py, calibrate_stereo.py,
+│                             # evaluate_external.py, validate_methods.py, import_calibration.py, calibrate_charuco.py, calibrate_stereo.py,
 │                             # make_charuco_board.py, extract_rosbag.py, download_datasets.py
 ├── report/                   # Revised mid report (LaTeX + PDF) and controlled-validation figures
 ├── docs/                     # Method documentation, generated tables and figures
-└── tests/                    # 55 unit + end-to-end tests (no downloads needed)
+└── tests/                    # Unit + end-to-end tests (no downloads; industrial ones skip without the extra)
 ```
 
 ## Setup
@@ -69,7 +76,8 @@ metricvision/
  
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh   # Install uv once
-uv sync --all-groups                              # Create .venv from uv.lock
+uv sync --all-groups                              # Create .venv from uv.lock (run `uv lock` once after pulling: new optional extras)
+uv sync --all-groups --extra industrial --extra rosbag   # + GTSAM, pycolmap, pyceres, rosbags
 uv run pytest                                     # Verify: all tests should pass
 ```
  
@@ -129,17 +137,19 @@ placeholder) and `dataset.baseline_scale` injects a deliberate baseline error (R
 ## Our own data: RealSense D455
 
 ```bash
-uv run python scripts/make_charuco_board.py --out docs/charuco_board_A3.pdf          # print, measure the square size
 # Record with the IR emitter OFF (ros2 param set /camera/camera depth_module.emitter_enabled 0)
 uv sync --extra rosbag
-uv run python scripts/extract_rosbag.py --bag calib.bag --out ~/datasets/wheelchair/calib
-uv run python scripts/calibrate_charuco.py --frames ~/datasets/wheelchair/calib --board configs/charuco_board.yaml \
-    --out ~/datasets/wheelchair/calib.yaml --factory ~/datasets/wheelchair/calib/factory_calib.yaml
-uv run python scripts/extract_rosbag.py --bag lab_01.bag --out ~/datasets/wheelchair/lab_01 --calib ~/datasets/wheelchair/calib.yaml
+uv run python scripts/extract_rosbag.py --bag lab_01.bag --out ~/datasets/wheelchair/lab_01        # + factory_calib.yaml
+# Calibration from MC-Calib (or a Kalibr camchain): convention and left/right verified on this sequence's images,
+# compared with the D455 factory extrinsic (baseline / pitch / yaw / roll differences -> RQ3)
+uv run python scripts/import_calibration.py --input MC-Calib/calibrated_cameras_data.yml \
+    --check-folder ~/datasets/wheelchair/lab_01 --out ~/datasets/wheelchair/lab_01/calib.yaml \
+    --compare ~/datasets/wheelchair/lab_01/factory_calib.yaml
 uv run metricvision run configs/final_wheelchair.yaml --dataset-root ~/datasets/wheelchair/lab_01 --run-name final
+# Alternative: our ChArUco calibration (scripts/make_charuco_board.py, scripts/calibrate_charuco.py --frames <folder>)
 ```
 
-`calibrate_charuco.py --selftest` verifies the calibration on rendered views. The calibration report gives intrinsics,
+`calibrate_charuco.py --selftest` verifies our own calibrator on rendered views. The calibration report gives intrinsics,
 baseline and extrinsic rotation with 1-sigma uncertainties and the rectified vertical error. Sequences that start and
 end at the same marked spot report `loop_closure_error_m/_pct` (final translation error without ground truth).
 
@@ -248,7 +258,7 @@ tracks and the same RANSAC inliers, so a difference in accuracy is due to the es
 If ROS 2 is sourced in your shell, prefix these with `env -u PYTHONPATH`.
 
 ```bash
-uv run pytest            # 55 tests: Jacobians, covariance, RANSAC, anchors, BA, NEES, calibration, rosbag, end to end
+uv run pytest            # Jacobians, covariance, RANSAC, anchors, BA (NumPy vs GTSAM), Ceres check, NEES, calibration, rosbag, end to end
 uv run ruff check src scripts tests
 uv run ruff format --check src tests
 ```

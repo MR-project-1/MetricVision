@@ -19,7 +19,7 @@ from metricvision.core.types import StereoCamera
 
 @dataclass
 class RawStereoCalib:
-    """Unrectified calibration (pinhole + radial-tangential)."""
+    """Unrectified stereo calibration: X_R = R X_L + T (``meta["distortion_model"]``: radtan by default, or fisheye)."""
 
     K_L: np.ndarray
     D_L: np.ndarray
@@ -56,17 +56,35 @@ class RawStereoCalib:
         return RawStereoCalib(a("K_L"), a("D_L"), a("K_R"), a("D_R"), a("R"), a("T").reshape(3), int(d["width"]), int(d["height"]), meta)
 
 
+FISHEYE_MODELS = ("fisheye", "equidistant", "kannala_brandt")  # Distortion model names handled by cv2.fisheye.
+
+
 class Rectifier:
-    """Wraps cv2.stereoRectify + remap tables; exposes the rectified ``StereoCamera``."""
+    """Wraps cv2.stereoRectify (or cv2.fisheye.stereoRectify) + remap tables; exposes the rectified ``StereoCamera``.
+
+    The distortion model comes from ``calib.meta["distortion_model"]``: ``radtan`` (default, OpenCV Brown, 4-5
+    coefficients) or a fisheye/equidistant model (Kannala-Brandt, 4 coefficients; MC-Calib type 1, Kalibr
+    ``equidistant``).
+    """
 
     def __init__(self, calib: RawStereoCalib, alpha: float = 0.0):
         size = (calib.width, calib.height)
-        R1, R2, P1, P2, Q, _, _ = cv2.stereoRectify(
-            calib.K_L, calib.D_L, calib.K_R, calib.D_R, size, calib.R, calib.T.reshape(3, 1), flags=cv2.CALIB_ZERO_DISPARITY, alpha=alpha
-        )
+        fisheye = str(calib.meta.get("distortion_model", "radtan")).lower() in FISHEYE_MODELS
+        T = calib.T.reshape(3, 1).astype(np.float64)
+        if fisheye:
+            DL, DR = np.asarray(calib.D_L, np.float64).ravel()[:4], np.asarray(calib.D_R, np.float64).ravel()[:4]
+            R1, R2, P1, P2, _ = cv2.fisheye.stereoRectify(
+                calib.K_L, DL, calib.K_R, DR, size, calib.R, T, flags=cv2.CALIB_ZERO_DISPARITY, balance=alpha, fov_scale=1.0
+            )
+            self.mapLx, self.mapLy = cv2.fisheye.initUndistortRectifyMap(calib.K_L, DL, R1, P1, size, cv2.CV_32FC1)
+            self.mapRx, self.mapRy = cv2.fisheye.initUndistortRectifyMap(calib.K_R, DR, R2, P2, size, cv2.CV_32FC1)
+        else:
+            R1, R2, P1, P2, _, _, _ = cv2.stereoRectify(
+                calib.K_L, calib.D_L, calib.K_R, calib.D_R, size, calib.R, T, flags=cv2.CALIB_ZERO_DISPARITY, alpha=alpha
+            )
+            self.mapLx, self.mapLy = cv2.initUndistortRectifyMap(calib.K_L, calib.D_L, R1, P1, size, cv2.CV_32FC1)
+            self.mapRx, self.mapRy = cv2.initUndistortRectifyMap(calib.K_R, calib.D_R, R2, P2, size, cv2.CV_32FC1)
         self.R1, self.R2 = R1, R2
-        self.mapLx, self.mapLy = cv2.initUndistortRectifyMap(calib.K_L, calib.D_L, R1, P1, size, cv2.CV_32FC1)
-        self.mapRx, self.mapRy = cv2.initUndistortRectifyMap(calib.K_R, calib.D_R, R2, P2, size, cv2.CV_32FC1)
         baseline = float(-P2[0, 3] / P2[0, 0])
         self.camera = StereoCamera(
             fx=float(P1[0, 0]), fy=float(P1[1, 1]), cx=float(P1[0, 2]), cy=float(P1[1, 2]), baseline=baseline, width=calib.width, height=calib.height

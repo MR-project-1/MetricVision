@@ -107,6 +107,7 @@ class SlidingWindowBA:
         self._keyframes: deque[Keyframe] = deque(maxlen=max(config.window, 1))  # Window.
         self.landmarks: dict[int, FloatArray] = {}  # track id -> world point.
         self._frames_since_keyframe = 0  # Keyframe policy state.
+        self.newest_covariance: FloatArray | None = None  # Marginal covariance of the newest keyframe pose (ours: rho, phi).
 
     @property
     def keyframes(self) -> list[Keyframe]:
@@ -214,6 +215,37 @@ class SlidingWindowBA:
         sw = np.sqrt(weight)[:, None]
         return cost, res * sw, jp * sw[:, :, None], jx * sw[:, :, None], sq
 
+    @staticmethod
+    def _reduced_system(
+        jp: FloatArray, jx: FloatArray, r: FloatArray, slots: np.ndarray, lms: np.ndarray, n_pose: int, n_lm: int, lam: float
+    ) -> tuple[FloatArray, FloatArray, FloatArray, FloatArray, FloatArray]:
+        """Normal equations with the landmarks eliminated (Schur complement), with LM damping ``lam``.
+
+        Returns:
+            Reduced camera matrix (W, W, 6, 6), reduced gradient (W, 6), H_ll^-1 (L, 3, 3), H_pl flattened (6W, 3L), g_l (L, 3).
+        """
+        h_pp = np.zeros((n_pose, n_pose, 6, 6))
+        jp_t = jp.transpose(0, 2, 1)  # Batched matmuls are much faster than einsum here.
+        jx_t = jx.transpose(0, 2, 1)
+        np.add.at(h_pp, (slots, slots), jp_t @ jp)
+        h_pl = jp_t @ jx  # (M, 6, 3), one per observation.
+        h_ll = np.zeros((n_lm, 3, 3))
+        np.add.at(h_ll, lms, jx_t @ jx)
+        g_p = np.zeros((n_pose, 6))
+        np.add.at(g_p, slots, (jp_t @ r[..., None])[..., 0])
+        g_l = np.zeros((n_lm, 3))
+        np.add.at(g_l, lms, (jx_t @ r[..., None])[..., 0])
+        for i in range(n_pose):  # LM damping (multiplicative) plus a tiny absolute term for unobservable directions.
+            h_pp[i, i] += lam * np.diag(np.diag(h_pp[i, i])) + 1e-9 * np.eye(6)
+        h_ll_inv = np.linalg.inv(h_ll + lam * h_ll * np.eye(3) + 1e-9 * np.eye(3))
+        dense = np.zeros((n_lm, n_pose, 6, 3))  # H_pl arranged per (landmark, keyframe slot).
+        dense[lms, slots] = h_pl
+        tmp_flat = (dense @ h_ll_inv[:, None]).transpose(1, 2, 0, 3).reshape(6 * n_pose, 3 * n_lm)  # H_pl H_ll^-1.
+        dense_flat = dense.transpose(1, 2, 0, 3).reshape(6 * n_pose, 3 * n_lm)
+        schur = h_pp - (tmp_flat @ dense_flat.T).reshape(n_pose, 6, n_pose, 6).transpose(0, 2, 1, 3)
+        rhs = g_p - (tmp_flat @ g_l.reshape(-1)).reshape(n_pose, 6)
+        return schur, rhs, h_ll_inv, dense_flat, g_l
+
     def optimise(self, sigma: float) -> BAResult | None:
         """Run Levenberg-Marquardt on the window (oldest keyframe fixed).
 
@@ -223,6 +255,7 @@ class SlidingWindowBA:
         Returns:
             The result, or None when the window is too small.
         """
+        self.newest_covariance = None
         if len(self._keyframes) < 2:
             return None
         landmark_ids, slots, lms, obs = self._problem()
@@ -235,32 +268,7 @@ class SlidingWindowBA:
         cost, r, jp, jx, _ = self._linearise(poses, points, slots, lms, obs, sigma)
         initial_cost, lam, accepted = cost, 1e-4, 0
         for _ in range(self._config.iterations):
-            # Normal-equation blocks.
-            h_pp = np.zeros((n_pose, n_pose, 6, 6))
-            jp_t = jp.transpose(0, 2, 1)  # Batched matmuls are much faster than einsum here.
-            jx_t = jx.transpose(0, 2, 1)
-            np.add.at(h_pp, (slots, slots), jp_t @ jp)
-            h_pl = jp_t @ jx  # (M, 6, 3), one per observation.
-            h_ll = np.zeros((n_lm, 3, 3))
-            np.add.at(h_ll, lms, jx_t @ jx)
-            g_p = np.zeros((n_pose, 6))
-            np.add.at(g_p, slots, (jp_t @ r[..., None])[..., 0])
-            g_l = np.zeros((n_lm, 3))
-            np.add.at(g_l, lms, (jx_t @ r[..., None])[..., 0])
-            # LM damping (multiplicative on the diagonal, plus a tiny absolute term for unobservable directions).
-            h_pp_d = h_pp.copy()
-            for i in range(n_pose):
-                h_pp_d[i, i] += lam * np.diag(np.diag(h_pp[i, i])) + 1e-9 * np.eye(6)
-            h_ll_d = h_ll + lam * h_ll * np.eye(3) + 1e-9 * np.eye(3)
-            h_ll_inv = np.linalg.inv(h_ll_d)
-            # Schur complement: S = H_pp - sum_l H_pl H_ll^-1 H_lp, b = g_p - sum_l H_pl H_ll^-1 g_l.
-            dense = np.zeros((n_lm, n_pose, 6, 3))  # H_pl arranged per (landmark, keyframe slot).
-            dense[lms, slots] = h_pl
-            tmp = dense @ h_ll_inv[:, None]  # H_pl H_ll^-1, (L, W, 6, 3).
-            tmp_flat = tmp.transpose(1, 2, 0, 3).reshape(6 * n_pose, 3 * n_lm)  # Rows: (w, i); columns: (l, k).
-            dense_flat = dense.transpose(1, 2, 0, 3).reshape(6 * n_pose, 3 * n_lm)
-            schur = h_pp_d - (tmp_flat @ dense_flat.T).reshape(n_pose, 6, n_pose, 6).transpose(0, 2, 1, 3)
-            rhs = g_p - (tmp_flat @ g_l.reshape(-1)).reshape(n_pose, 6)
+            schur, rhs, h_ll_inv, dense_flat, g_l = self._reduced_system(jp, jx, r, slots, lms, n_pose, n_lm, lam)
             s_free = schur[np.ix_(free, free)].transpose(0, 2, 1, 3).reshape(6 * len(free), 6 * len(free))
             try:
                 d_pose_free = np.linalg.solve(s_free, -rhs[free].reshape(-1)).reshape(-1, 6)
@@ -287,7 +295,13 @@ class SlidingWindowBA:
             kf.camera_from_world = pose
         for tid, point in zip(landmark_ids.tolist(), points, strict=True):
             self.landmarks[tid] = point
-        _, _, _, _, sq = self._linearise(poses, points, slots, lms, obs, sigma)
+        _, r, jp, jx, sq = self._linearise(poses, points, slots, lms, obs, sigma)
+        schur, _, _, _, _ = self._reduced_system(jp, jx, r, slots, lms, n_pose, n_lm, 0.0)  # Undamped information.
+        try:  # Marginal covariance of the newest pose: block of the inverse reduced camera system.
+            cov_free = np.linalg.inv(schur[np.ix_(free, free)].transpose(0, 2, 1, 3).reshape(6 * len(free), 6 * len(free)))
+            self.newest_covariance = cov_free[-6:, -6:]
+        except np.linalg.LinAlgError:
+            self.newest_covariance = None
         newest = slots == n_pose - 1
         outliers = np.unique(landmark_ids[lms[newest & (sq > CHI2_STEREO_99)]])
         return BAResult(initial_cost, cost, accepted, n_lm, len(slots), outliers)

@@ -17,7 +17,7 @@ from metricvision.backend.stereo_odometry import SparseStereoOdometry  # Sparse 
 from metricvision.config import ExperimentConfig  # Experiment settings.
 from metricvision.datasets import DATASETS, StereoDataset  # Dataset registry (import registers loaders).
 from metricvision.depth import DEPTH_ESTIMATORS, DepthEstimator  # Depth registry (import registers estimators).
-from metricvision.evaluation.consistency import relative_nees  # NEES of the predicted pose covariance.
+from metricvision.evaluation.consistency import relative_nees, window_nees  # NEES of the predicted pose covariance.
 from metricvision.evaluation.trajectory_metrics import TrajectoryErrors, evaluate_trajectory  # Accuracy metrics.
 from metricvision.evaluation.writers import write_json, write_kitti, write_rows_csv, write_tum  # Output writers.
 from metricvision.frontend import MATCHERS, STEREO_FRONTENDS  # Front-end registries (import registers them).
@@ -73,6 +73,7 @@ class RunSummary:
             and end at the same marked spot (wheelchair loops) this is the final translation error without ground truth.
         loop_closure_error_pct: The same in percent of the estimated path length.
         consistency: Frame-to-frame NEES of the predicted pose covariance (sparse pipeline with LM and ground truth).
+        ba_consistency: NEES of each bundle-adjusted window (newest keyframe relative to the fixed oldest one).
         mean_ba_ms: Mean bundle-adjustment time per frame (amortised).
     """
 
@@ -107,6 +108,7 @@ class RunSummary:
     loop_closure_error_m: float = float("nan")  # Final position error of loop sequences.
     loop_closure_error_pct: float = float("nan")  # ... in percent of the path.
     consistency: dict[str, Any] | None = None  # NEES summary.
+    ba_consistency: dict[str, Any] | None = None  # Window NEES of the bundle-adjusted poses.
     mean_ba_ms: float = float("nan")  # Bundle adjustment cost.
 
     @classmethod
@@ -262,6 +264,11 @@ class ExperimentRunner:
             consistency, nees = relative_nees(camera_trajectory, reference_camera, covariances)
             if consistency.num_frames:
                 summary = replace(summary, consistency=consistency.to_dict())
+            records = getattr(self._odometry, "ba_records", None)  # Bundle-adjusted windows.
+            if records:
+                window, _ = window_nees(records, reference_camera, camera_trajectory.timestamps)
+                if window.num_frames:
+                    summary = replace(summary, ba_consistency=window.to_dict())
 
         output_dir = self.output_dir  # Resolve once.
         output_dir.mkdir(parents=True, exist_ok=True)  # Create folders as needed.

@@ -66,6 +66,10 @@ class OdometryConfig:
         ba_keyframe_every: New keyframe every N frames...
         ba_min_translation_m: ...or after this much camera motion.
         ba_iterations: Levenberg-Marquardt iterations per window optimisation.
+        ba_solver: ``numpy`` (our Schur-complement LM, the reference) or ``gtsam`` (GTSAM factor graph with
+            ``GenericStereoFactor3D``, the identical (u_L, v_L, u_R) residual; needs ``--extra industrial``).
+        ba_gauge: GTSAM only: ``fix`` holds the oldest keyframe constant; ``prior`` ties it to its previous marginal
+            covariance (approximate marginalisation of the keyframes that left the window).
     """
 
     pnp: PnPConfig = field(default_factory=PnPConfig)  # PnP settings.
@@ -91,6 +95,8 @@ class OdometryConfig:
     ba_keyframe_every: int = 3  # Keyframe period (frames).
     ba_min_translation_m: float = 1.0  # ...or keyframe after this much motion.
     ba_iterations: int = 6  # LM iterations per window optimisation.
+    ba_solver: str = "numpy"  # numpy (own Schur LM, reference) | gtsam (factor graph, GenericStereoFactor3D).
+    ba_gauge: str = "fix"  # gtsam only: fix (oldest keyframe constant) | prior (oldest tied to its marginal).
 
     def __post_init__(self) -> None:
         """Validate option names.
@@ -103,6 +109,8 @@ class OdometryConfig:
             "noise_model": ("fixed", "adaptive"),
             "rig_mode": ("rigid", "independent", "averaged"),
             "pose_method": ("pnp", "umeyama3d", "mahalanobis3d", "soft"),
+            "ba_solver": ("numpy", "gtsam"),
+            "ba_gauge": ("fix", "prior"),
         }  # Allowed values.
         for name, allowed in choices.items():  # Check each option.
             if getattr(self, name) not in allowed:
