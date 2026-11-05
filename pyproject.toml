@@ -1,7 +1,7 @@
 [project]
 name = "metricvision"  # Package name used for imports and the command-line tool.
 version = "0.1.0"  # Version of the benchmark code.
-description = "End-to-end benchmark of feature extractors for stereo visual odometry."  # One-line summary.
+description = "Metric stereo visual odometry with a rigid-rig constraint: covariance-weighted rig LM, landmark anchors, sliding-window BA."  # One-line summary.
 readme = "README.md"  # Long description shown by packaging tools.
 requires-python = ">=3.10,<3.13"  # 3.10 is pinned in .python-version to match ROS 2 Humble and JetPack 6 wheels.
 dependencies = [
@@ -11,6 +11,14 @@ dependencies = [
     "pyyaml>=6.0",  # Parsing experiment configs and EuRoC sensor calibration files.
     "evo>=1.28",  # Trajectory association, alignment and ATE/RPE metrics.
     "tqdm>=4.66",  # Progress bars while processing sequences.
+]
+
+[project.optional-dependencies]
+rosbag = ["rosbags>=0.9"]  # Only for scripts/extract_rosbag.py (RealSense D455 recordings).
+industrial = [  # Optional industrial-standard back ends (pure-Python fallbacks remain the default).
+    "gtsam>=4.2",  # odometry.ba_solver=gtsam (GenericStereoFactor3D window BA, Marginals).
+    "pycolmap>=3.11",  # pnp.ransac=colmap_rig (generalized absolute pose, LO-RANSAC).
+    "pyceres>=2.3",  # Ceres cross-check of the rig LM (tests).
 ]
 
 [project.scripts]
@@ -43,6 +51,13 @@ ignore = [
     "N803",  # Allow maths-style argument names such as K.
     "N806",  # Allow maths-style local names such as T_world_cam.
 ]
+
+[tool.ruff.lint.per-file-ignores]
+"src/metricvision/calibration/*" = ["E731", "N802", "N815", "B905"]  # Ported calibration code keeps its maths-style names.
+"scripts/calibrate_*.py" = ["E731", "N802", "N815", "B905", "E402"]
+"scripts/extract_rosbag.py" = ["E731", "N802", "B905"]
+"scripts/make_charuco_board.py" = ["E402"]
+"tests/test_calibration_*.py" = ["E731", "N802", "N806", "N815", "B905", "E402"]
 
 [tool.mypy]
 python_version = "3.10"  # Type-check against the deployment Python version.

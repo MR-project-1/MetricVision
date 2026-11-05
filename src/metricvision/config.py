@@ -3,7 +3,7 @@
 from __future__ import annotations  # Postponed evaluation of type hints.
 
 from collections.abc import Mapping  # Input type hints.
-from dataclasses import dataclass, field, replace  # Immutable configs and copy-with-changes.
+from dataclasses import asdict, dataclass, field, fields, replace  # Immutable configs and copy-with-changes.
 from pathlib import Path  # Filesystem paths.
 from typing import Any  # Loosely typed YAML content.
 
@@ -117,7 +117,7 @@ class ExperimentConfig:
             odometry=OdometryConfig.from_dict(data.get("odometry")),  # Defaults if missing.
             output_dir=Path(data.get("output_dir", "results")),  # Defaults to ./results.
             max_frames=int(max_frames) if max_frames is not None else None,  # None means "all frames".
-            pipeline=str(data.get("pipeline", "dense")),  # Dense by default.
+            pipeline=str(data.get("pipeline", "sparse")),  # The sparse rigid-rig pipeline is the method; dense is a baseline.
             stereo_frontend=ComponentConfig.from_dict(data.get("stereo_frontend") or {"name": "fast_orb_klt"}),  # Sparse front end.
             run_name=data.get("run_name"),  # Optional folder name.
         )
@@ -196,3 +196,53 @@ class ExperimentConfig:
         if run_name is not None:  # Name the output folder.
             config = replace(config, run_name=run_name)  # Set it.
         return config  # Updated copy (the original is untouched).
+
+    def with_settings(self, assignments: list[str] | tuple[str, ...]) -> ExperimentConfig:
+        """Return a copy with generic ``section.key=value`` overrides applied (``--set`` on the command line).
+
+        Values are parsed as YAML (``true``, ``0.3``, ``[0.1, 2.0]``, ``stereo``). Paths:
+
+        * ``odometry.<key>``, ``odometry.pnp.<key>``, ``odometry.keyframe.<key>``: back-end settings;
+        * ``dataset.<key>``, ``matcher.<key>``, ``depth.<key>``, ``stereo_frontend.<key>``: constructor params
+          (``<section>.name=...`` switches the component);
+        * ``max_frames``, ``pipeline``, ``run_name``, ``output_dir``: top-level options.
+
+        Args:
+            assignments: Strings of the form ``a.b=value``.
+
+        Returns:
+            The updated configuration.
+
+        Raises:
+            ValueError: If an assignment is malformed or names an unknown key.
+        """
+        config = self  # Start from the current config.
+        for assignment in assignments:  # Apply in order.
+            key, sep, raw = assignment.partition("=")  # Split once.
+            if not sep or not key.strip():
+                raise ValueError(f"--set expects section.key=value, got '{assignment}'")
+            path, value = key.strip().split("."), yaml.safe_load(raw)  # YAML-typed value.
+            section = path[0]
+            if section == "odometry":  # Nested frozen dataclasses.
+                data = asdict(config.odometry)  # Plain nested dict.
+                target = data
+                for part in path[1:-1]:  # Descend into pnp/keyframe.
+                    if part not in target or not isinstance(target[part], dict):
+                        raise ValueError(f"Unknown odometry section '{part}' in '{assignment}'")
+                    target = target[part]
+                if len(path) < 2 or path[-1] not in target:  # Unknown key: fail loudly instead of ignoring.
+                    raise ValueError(f"Unknown setting '{key}'")
+                target[path[-1]] = value
+                config = replace(config, odometry=OdometryConfig.from_dict(data))
+            elif section in ("dataset", "matcher", "depth", "stereo_frontend") and len(path) == 2:  # Component params.
+                component: ComponentConfig = getattr(config, section)
+                if path[1] == "name":
+                    updated = ComponentConfig(str(value), component.params)
+                else:
+                    updated = ComponentConfig(component.name, {**component.params, path[1]: value})
+                config = replace(config, **{section: updated})
+            elif len(path) == 1 and section in {f.name for f in fields(config)} and section not in ("odometry",):  # Top level.
+                config = replace(config, **{section: Path(value) if section == "output_dir" else value})
+            else:
+                raise ValueError(f"Unknown setting '{key}'")
+        return config  # Updated copy.

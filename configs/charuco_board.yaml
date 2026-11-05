@@ -1,0 +1,15 @@
+# ChArUco target for the D455 IR pair (848x480, ~87 deg HFOV, fx ~ 430 px).
+# 9 x 6 squares of 40 mm = 360 x 240 mm board: fits A3 with margins.
+# 4x4 markers (6 cells incl. border) of 30 mm: at 1.0 m one marker cell is ~2.1 px,
+# so keep the board within ~0.35-1.0 m of the camera.
+#
+# AFTER PRINTING: measure the printed squares with calipers over the full board width
+# (e.g. 8 squares) and put the MEASURED value below. The baseline scales directly with it:
+# a 1 % print-scale error is a 1 % (~1 mm) baseline error.
+board:
+  squares_x: 9
+  squares_y: 6
+  square_length: 0.040     # m  <- replace with the measured value
+  marker_length: 0.030     # m  <- scales with the square
+  dictionary: DICT_4X4_50
+  legacy: auto             # auto-detects boards generated with OpenCV < 4.6 / calib.io

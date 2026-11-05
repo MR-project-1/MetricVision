@@ -13,6 +13,9 @@
 #   sparse_f2f_lm     ... + rigid-rig LM, analytic Jacobians, (u_l, v_l, u_r) residuals, covariance weighting
 #   sparse_birth_lm   rigid-rig LM, 3D points anchored at each track's birth frame
 #   sparse_fused_opencv / sparse_fused_lm   anchors fused by inverse covariance on every re-observation (proposal method)
+#
+# The LM now shares stereo_sigma_px by default (one noise model); LEGACY pins the mid-report LM noise (1 px) so
+# these nine runs reproduce the mid-report numbers. The method ablations live in scripts/run_ablations.sh.
 set -euo pipefail
 
 KITTI_ROOT=${KITTI_ROOT:-/data/kitti}  # Folder with sequences/ and poses/.
@@ -26,7 +29,7 @@ unset PYTHONPATH  # A sourced ROS setup leaks its pytest/launch packages into th
 commands=()  # One shell command per run.
 for dataset in kitti euroc; do
   if [ "$dataset" = kitti ]; then root=$KITTI_ROOT; else root=$EUROC_ROOT; fi
-  base="uv run metricvision run configs/$dataset.yaml --dataset-root $root --output-dir $RESULTS --no-progress"
+  base="uv run metricvision run configs/$dataset.yaml --dataset-root $root --output-dir $RESULTS --no-progress --set odometry.pnp.lm_pixel_sigma=1.0"  # LEGACY noise.
   commands+=("$base --pipeline dense --matcher orb --refine opencv --run-name dense_orb_opencv > $RESULTS/logs/${dataset}_dense_orb_opencv.log 2>&1")
   commands+=("$base --pipeline dense --matcher orb --refine lm --run-name dense_orb_lm > $RESULTS/logs/${dataset}_dense_orb_lm.log 2>&1")
   commands+=("$base --pipeline dense --matcher sift --refine lm --run-name dense_sift_lm > $RESULTS/logs/${dataset}_dense_sift_lm.log 2>&1")

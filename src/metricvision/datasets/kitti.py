@@ -60,12 +60,15 @@ def _read_image(path: Path) -> ImageArray:
 class KittiOdometryDataset(StereoDataset):
     """One sequence of the KITTI odometry benchmark."""
 
-    def __init__(self, root: str | Path, sequence: str | int = "00") -> None:
+    def __init__(self, root: str | Path, sequence: str | int = "00", calib_file: str | Path | None = None, baseline_scale: float = 1.0) -> None:
         """Index the images and read calibration.
 
         Args:
             root: Folder containing ``sequences/`` (and optionally ``poses/``).
             sequence: Sequence number, e.g. ``"00"`` or ``5``.
+            calib_file: Alternative ``calib.txt`` (same P0/P1 format), e.g. the recalibration of Cvisic et al. 2021;
+                ``{seq}`` is replaced by the two-digit sequence. Default: the sequence's own file.
+            baseline_scale: Multiplies the baseline (deliberate extrinsic error for sensitivity studies; 1 = off).
 
         Raises:
             FileNotFoundError: If the sequence folder or its images are missing.
@@ -80,7 +83,10 @@ class KittiOdometryDataset(StereoDataset):
         if not self._left_paths or len(self._left_paths) != len(self._right_paths):  # Both cameras must match.
             raise FileNotFoundError(f"Missing or unpaired images in {sequence_dir}")  # Refuse inconsistent data.
         self._timestamps = np.loadtxt(sequence_dir / "times.txt", dtype=np.float64).reshape(-1)  # Seconds since start.
-        calibration = _read_calibration(sequence_dir / "calib.txt")  # Projection matrices.
+        calib_path = Path(str(calib_file).replace("{seq}", self._sequence)).expanduser() if calib_file else sequence_dir / "calib.txt"
+        if not calib_path.is_file():  # Clear error for a wrong override.
+            raise FileNotFoundError(f"Missing calibration {calib_path}")
+        calibration = _read_calibration(calib_path)  # Projection matrices.
         p0 = calibration["P0"].reshape(3, 4)  # Left grayscale camera projection.
         p1 = calibration["P1"].reshape(3, 4)  # Right grayscale camera projection.
         height, width = _read_image(self._left_paths[0]).shape  # Image size from the first frame.
@@ -89,7 +95,7 @@ class KittiOdometryDataset(StereoDataset):
             fy=float(p0[1, 1]),  # Focal length y.
             cx=float(p0[0, 2]),  # Principal point x.
             cy=float(p0[1, 2]),  # Principal point y.
-            baseline=float(-p1[0, 3] / p1[0, 0]),  # P1 stores -fx * baseline in its last column.
+            baseline=float(-p1[0, 3] / p1[0, 0]) * float(baseline_scale),  # P1 stores -fx * baseline in its last column.
             width=int(width),  # Image width.
             height=int(height),  # Image height.
         )

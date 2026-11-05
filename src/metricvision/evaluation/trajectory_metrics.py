@@ -26,6 +26,10 @@ class TrajectoryErrors:
         rpe_trans_rmse_m: Frame-to-frame relative translation error, RMSE, metres.
         rpe_rot_rmse_deg: Frame-to-frame relative rotation error, RMSE, degrees.
         num_pairs: Number of estimate/ground-truth poses matched by timestamp.
+        rpe_1s_trans_rmse_m: Relative translation error over 1 s, RMSE, metres.
+        rpe_1s_rot_rmse_deg: Relative rotation error over 1 s, RMSE, degrees.
+        path_length_m: Ground-truth path length.
+        final_position_error_m: Position error of the last pose after SE(3) alignment of the first pose only.
     """
 
     ate_rmse_m: float  # Headline accuracy number.
@@ -36,6 +40,10 @@ class TrajectoryErrors:
     rpe_trans_rmse_m: float  # Local translational drift.
     rpe_rot_rmse_deg: float  # Local rotational drift.
     num_pairs: int  # Poses used in the evaluation.
+    rpe_1s_trans_rmse_m: float = float("nan")  # Drift over one second.
+    rpe_1s_rot_rmse_deg: float = float("nan")  # Rotation drift over one second.
+    path_length_m: float = float("nan")  # Distance travelled.
+    final_position_error_m: float = float("nan")  # Open-loop end-point error.
 
     def to_dict(self) -> dict[str, float | int | str]:
         """Convert to a plain dictionary for JSON output.
@@ -97,6 +105,21 @@ def evaluate_trajectory(estimate: Trajectory, reference: Trajectory, max_time_di
         metrics.PoseRelation.rotation_angle_deg, delta=1, delta_unit=metrics.Unit.frames, all_pairs=False
     )  # Relative rotation over 1 frame.
     rpe_r.process_data((reference_evo, estimate_evo))  # Compute per-pair rotation errors.
+    rate = 1.0 / float(np.median(np.diff(reference_evo.timestamps))) if reference_evo.num_poses > 1 else 1.0  # Frames per second.
+    one_second = max(1, int(round(rate)))  # Frames in one second.
+    rpe_1s_t = rpe_1s_r = float("nan")
+    if reference_evo.num_poses > one_second + 1:  # Long enough for 1 s pairs.
+        rel_t = metrics.RPE(metrics.PoseRelation.translation_part, delta=one_second, delta_unit=metrics.Unit.frames, all_pairs=True)
+        rel_t.process_data((reference_evo, estimate_evo))
+        rel_r = metrics.RPE(metrics.PoseRelation.rotation_angle_deg, delta=one_second, delta_unit=metrics.Unit.frames, all_pairs=True)
+        rel_r.process_data((reference_evo, estimate_evo))
+        rpe_1s_t = float(rel_t.get_statistic(metrics.StatisticsType.rmse))
+        rpe_1s_r = float(rel_r.get_statistic(metrics.StatisticsType.rmse))
+    ref_xyz = reference_evo.positions_xyz
+    path_length = float(np.sum(np.linalg.norm(np.diff(ref_xyz, axis=0), axis=1)))  # Distance travelled.
+    origin_aligned = copy.deepcopy(estimate_evo)
+    origin_aligned.align_origin(reference_evo)  # Open-loop: only the first pose is aligned.
+    final_error = float(np.linalg.norm(origin_aligned.positions_xyz[-1] - ref_xyz[-1]))
     return TrajectoryErrors(  # Collect the statistics.
         ate_rmse_m=float(ape.get_statistic(metrics.StatisticsType.rmse)),  # ATE RMSE.
         ate_mean_m=float(ape.get_statistic(metrics.StatisticsType.mean)),  # ATE mean.
@@ -106,4 +129,8 @@ def evaluate_trajectory(estimate: Trajectory, reference: Trajectory, max_time_di
         rpe_trans_rmse_m=float(rpe_t.get_statistic(metrics.StatisticsType.rmse)),  # RPE translation RMSE.
         rpe_rot_rmse_deg=float(rpe_r.get_statistic(metrics.StatisticsType.rmse)),  # RPE rotation RMSE.
         num_pairs=int(reference_evo.num_poses),  # Number of associated poses.
+        rpe_1s_trans_rmse_m=rpe_1s_t,  # One-second drift.
+        rpe_1s_rot_rmse_deg=rpe_1s_r,
+        path_length_m=path_length,
+        final_position_error_m=final_error,
     )

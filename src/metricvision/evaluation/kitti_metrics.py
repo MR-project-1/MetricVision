@@ -53,6 +53,41 @@ def load_kitti_poses(path: Path) -> list[FloatArray]:
     return poses  # All poses.
 
 
+def kitti_segment_error_list(
+    estimate: Sequence[FloatArray], ground_truth: Sequence[FloatArray], lengths: Sequence[int] = SEGMENT_LENGTHS_M
+) -> list[tuple[int, int, float, float]]:
+    """Per-segment devkit errors (for paired statistics between methods).
+
+    Args:
+        estimate: Estimated T_world_cam per frame.
+        ground_truth: Ground-truth T_world_cam per frame (same frames).
+        lengths: Segment lengths in metres.
+
+    Returns:
+        (first frame, length, translation error [m/m], rotation error [rad/m]) per segment.
+
+    Raises:
+        ValueError: If the sequences differ in length.
+    """
+    if len(estimate) != len(ground_truth):  # Devkit requires line-by-line correspondence.
+        raise ValueError(f"estimate has {len(estimate)} poses but ground truth has {len(ground_truth)}")  # Clear error.
+    positions = np.array([pose[:3, 3] for pose in ground_truth])  # Ground-truth positions.
+    distances = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(positions, axis=0), axis=1))])  # Distance travelled.
+    segments: list[tuple[int, int, float, float]] = []
+    for first in range(0, len(ground_truth), STEP_SIZE_FRAMES):  # Segment starts.
+        for length in lengths:  # Segment lengths.
+            beyond = np.nonzero(distances[first:] > distances[first] + length)[0]  # Frames past the segment end.
+            if beyond.size == 0:  # Sequence too short from here.
+                continue  # Skip.
+            last = first + int(beyond[0])  # Last frame of the segment.
+            delta_gt = invert_pose(ground_truth[first]) @ ground_truth[last]  # True relative motion.
+            delta_est = invert_pose(estimate[first]) @ estimate[last]  # Estimated relative motion.
+            error = invert_pose(delta_est) @ delta_gt  # Residual motion.
+            cos_angle = np.clip(0.5 * (np.trace(error[:3, :3]) - 1.0), -1.0, 1.0)  # Rotation angle cosine.
+            segments.append((first, int(length), float(np.linalg.norm(error[:3, 3])) / length, float(np.arccos(cos_angle)) / length))
+    return segments
+
+
 def kitti_segment_errors(
     estimate: Sequence[FloatArray], ground_truth: Sequence[FloatArray], lengths: Sequence[int] = SEGMENT_LENGTHS_M
 ) -> KittiErrors:
@@ -65,30 +100,12 @@ def kitti_segment_errors(
 
     Returns:
         Average translation and rotation errors.
-
-    Raises:
-        ValueError: If the sequences differ in length.
     """
-    if len(estimate) != len(ground_truth):  # Devkit requires line-by-line correspondence.
-        raise ValueError(f"estimate has {len(estimate)} poses but ground truth has {len(ground_truth)}")  # Clear error.
-    positions = np.array([pose[:3, 3] for pose in ground_truth])  # Ground-truth positions.
-    distances = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(positions, axis=0), axis=1))])  # Distance travelled.
-    t_errors: list[float] = []  # Translation error per metre.
-    r_errors: list[float] = []  # Rotation error (rad) per metre.
-    for first in range(0, len(ground_truth), STEP_SIZE_FRAMES):  # Segment starts.
-        for length in lengths:  # Segment lengths.
-            beyond = np.nonzero(distances[first:] > distances[first] + length)[0]  # Frames past the segment end.
-            if beyond.size == 0:  # Sequence too short from here.
-                continue  # Skip.
-            last = first + int(beyond[0])  # Last frame of the segment.
-            delta_gt = invert_pose(ground_truth[first]) @ ground_truth[last]  # True relative motion.
-            delta_est = invert_pose(estimate[first]) @ estimate[last]  # Estimated relative motion.
-            error = invert_pose(delta_est) @ delta_gt  # Residual motion.
-            cos_angle = np.clip(0.5 * (np.trace(error[:3, :3]) - 1.0), -1.0, 1.0)  # Rotation angle cosine.
-            r_errors.append(float(np.arccos(cos_angle)) / length)  # Radians per metre.
-            t_errors.append(float(np.linalg.norm(error[:3, 3])) / length)  # Metres per metre.
-    if not t_errors:  # Sequence shorter than 100 m.
+    segments = kitti_segment_error_list(estimate, ground_truth, lengths)  # Per segment.
+    if not segments:  # Sequence shorter than 100 m.
         return KittiErrors(float("nan"), float("nan"), 0)  # Undefined.
+    t_errors = [seg[2] for seg in segments]
+    r_errors = [seg[3] for seg in segments]
     return KittiErrors(  # Devkit averaging over all segments.
         translation_percent=100.0 * float(np.mean(t_errors)),  # Percent.
         rotation_deg_per_100m=100.0 * float(np.degrees(np.mean(r_errors))),  # Degrees per 100 m.

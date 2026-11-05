@@ -42,12 +42,43 @@ LABELS = {  # Human-readable run names (fallback: the folder name).
     "sparse_birth_lm": "Sparse birth anchors, rig-LM",
     "sparse_fused_opencv": "Sparse fused anchors, OpenCV-LM",
     "sparse_fused_lm": "Sparse fused anchors, rig-LM (proposed)",
+    "abl_ref": "Ablation ref: fused, rig-LM, shared noise",
+    "abl_mono": "- right-image residuals",
+    "abl_nocov": "- covariance weighting",
+    "abl_nocov_gate40": "- covariance weighting + 40B depth gate",
+    "abl_nohuber": "- Huber kernel",
+    "abl_sigma1": "LM noise 1 px (mid-report)",
+    "abl_independent": "Independent L/R poses (12 DoF)",
+    "abl_averaged": "Averaged L/R poses",
+    "abl_ransac_stereo": "+ stereo AP3P-MSAC RANSAC",
+    "abl_invdepth": "+ inverse-depth anchors",
+    "abl_inflate": "+ pose-uncertainty inflation",
+    "abl_invdepth_inflate": "+ inverse depth + inflation",
+    "abl_adaptive": "+ adaptive noise model",
+    "abl_realign5": "+ birth-template re-alignment",
+    "abl_klt_stereo": "+ KLT stereo matching",
+    "full": "Full proposal",
+    "full_recalib": "Full proposal, recalibrated KITTI",
+    "abl_f2f": "Frame-to-frame (no anchors), rig-LM",
+    "abl_ba5": "+ sliding-window BA (5 KF)",
+    "abl_ba7": "+ sliding-window BA (7 KF)",
+    "abl_ba5_gtsam": "+ sliding-window BA (5 KF, GTSAM)",
+    "abl_ba5_gtsam_prior": "+ sliding-window BA (5 KF, GTSAM, marginal prior)",
+    "abl_ransac_colmap": "+ COLMAP rig RANSAC (GP3P)",
+    "abl_umeyama3d": "3D-3D Umeyama (same inliers)",
+    "abl_mahalanobis3d": "3D-3D Mahalanobis (same inliers)",
+    "abl_soft": "SOFT-style R/t decoupling (same inliers)",
+    "abl_replenish050": "Replenish below 50 % of tracks",
+    "abl_replenish035": "Replenish below 35 % of tracks",
+    "final": "Final configuration",
+    "ext_libviso2": "libviso2 (external)",
+    "ext_orbslam3": "ORB-SLAM3 stereo VO (external)",
+    "ext_basalt": "Basalt VO (external)",
 }
 ORDER = list(LABELS)  # Table/legend order.
 KEY_RUNS = ("dense_orb_lm", "sparse_f2f_lm", "sparse_fused_lm")  # Uncluttered comparison panel.
-COLOURS = dict(
-    zip(ORDER, ["#9e9e9e", "#1f77b4", "#17becf", "#ffbb78", "#ff7f0e", "#d62728", "#9467bd", "#8c564b", "#2ca02c"], strict=True)
-)  # One colour per method in every plot.
+_PALETTE = ["#9e9e9e", "#1f77b4", "#17becf", "#ffbb78", "#ff7f0e", "#d62728", "#9467bd", "#8c564b", "#2ca02c"]  # Mid-report runs.
+COLOURS = {run: (_PALETTE[i] if i < len(_PALETTE) else plt.get_cmap("tab20")(i - len(_PALETTE))) for i, run in enumerate(ORDER)}  # noqa: E501  # One colour per method in every plot.
 
 
 def _colour(run: str) -> str | None:
@@ -155,13 +186,13 @@ def _table(rows: list[dict[str, Any]], kitti: bool) -> tuple[str, str]:
     Returns:
         (markdown, latex).
     """
-    head = ["Method", "ATE RMSE [m]", "RPE trans [m]", "RPE rot [deg]"]  # Common columns.
+    head = ["Method", "ATE RMSE [m]", "RPE trans [m]", "RPE rot [deg]", "RPE 1s trans [m]", "ANEES"]  # Common columns.
     if kitti:  # Devkit columns.
         head += ["t_rel [%]", "r_rel [deg/100m]"]
     head += ["Fail", "Inliers", "Time [ms]", "FPS"]  # Robustness and runtime.
     body = []  # Table rows.
     for r in rows:  # One run per row.
-        cells = [_label(r["run"]), _fmt(r["ate"], 3), _fmt(r["rpe_t"], 4), _fmt(r["rpe_r"], 3)]  # Accuracy.
+        cells = [_label(r["run"]), _fmt(r["ate"], 3), _fmt(r["rpe_t"], 4), _fmt(r["rpe_r"], 3), _fmt(r.get("rpe_1s"), 4), _fmt(r.get("anees"), 2)]  # Accuracy, consistency.
         if kitti:
             cells += [_fmt(r.get("t_rel"), 2), _fmt(r.get("r_rel"), 3)]  # Devkit.
         cells += [str(r["fail"]), _fmt(r["inliers"], 0), _fmt(r["ms"], 1), _fmt(r["fps"], 1)]  # Robustness and runtime.
@@ -280,6 +311,8 @@ def main() -> None:
                 "ms": summary["mean_total_ms"],
                 "fps": summary["fps"],
                 "frames": summary["num_frames"],
+                "rpe_1s": errors.get("rpe_1s_trans_rmse_m"),
+                "anees": (summary.get("consistency") or {}).get("anees"),
             }
             estimate = file_interface.read_tum_trajectory_file(str(run_dir / "trajectory.tum"))  # Body-frame estimate.
             ref, est = sync.associate_trajectories(_to_evo(gt), estimate, max_diff=0.01)  # Associate.

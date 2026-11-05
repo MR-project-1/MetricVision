@@ -37,6 +37,14 @@ def build_parser() -> argparse.ArgumentParser:
     )  # Other sequences.
     run.add_argument("--anchor", choices=["previous", "birth", "fused"], help="Override sparse-pipeline point anchoring.")  # Anchoring ablation.
     run.add_argument("--run-name", help="Output folder name (defaults to the front-end name).")  # Keep ablations apart.
+    run.add_argument(
+        "--set",
+        dest="settings",
+        action="append",
+        default=[],
+        metavar="SECTION.KEY=VALUE",
+        help="Generic override, repeatable (e.g. --set odometry.pnp.ransac=stereo --set odometry.rig_mode=independent).",
+    )  # Any option without a dedicated flag.
     run.add_argument("--no-progress", action="store_true", help="Hide the progress bar.")  # For logs/CI.
 
     commands.add_parser("list", help="List registered datasets, matchers and depth estimators.")  # `metricvision list`.
@@ -59,17 +67,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("stereo front ends:", ", ".join(STEREO_FRONTENDS.names()))  # Sparse front-end keys (sparse pipeline).
         print("depth estimators: ", ", ".join(DEPTH_ESTIMATORS.names()))  # Depth keys.
         return 0  # Success.
-    config = ExperimentConfig.from_yaml(args.config).with_overrides(  # Load YAML, then apply CLI overrides.
-        matcher=args.matcher,  # Optional extractor swap.
-        dataset_root=args.dataset_root,  # Optional data location.
-        max_frames=args.max_frames,  # Optional frame cap.
-        output_dir=args.output_dir,  # Optional results folder.
-        pipeline=args.pipeline,  # Optional pipeline swap.
-        refine=args.refine,  # Optional refinement swap.
-        run_name=args.run_name,  # Optional folder name.
-        anchor=args.anchor,  # Optional anchoring swap.
-        sequence=args.sequence,  # Optional sequence swap.
-    )
+    config = (
+        ExperimentConfig.from_yaml(args.config)
+        .with_overrides(  # Load YAML, then apply CLI overrides.
+            matcher=args.matcher,  # Optional extractor swap.
+            dataset_root=args.dataset_root,  # Optional data location.
+            max_frames=args.max_frames,  # Optional frame cap.
+            output_dir=args.output_dir,  # Optional results folder.
+            pipeline=args.pipeline,  # Optional pipeline swap.
+            refine=args.refine,  # Optional refinement swap.
+            run_name=args.run_name,  # Optional folder name.
+            anchor=args.anchor,  # Optional anchoring swap.
+            sequence=args.sequence,  # Optional sequence swap.
+        )
+        .with_settings(args.settings)
+    )  # Generic --set overrides last.
     runner = ExperimentRunner(config)  # Build all components.
     summary = runner.run(show_progress=not args.no_progress)  # Run the experiment.
     print(json.dumps(sanitise_for_json(summary.to_dict()), indent=2))  # Show the summary.

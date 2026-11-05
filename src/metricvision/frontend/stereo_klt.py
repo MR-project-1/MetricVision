@@ -5,10 +5,15 @@ depth), this front end produces its own sparse stereo pairs and tracks them
 frame to frame, yielding 3D-2D (and 3D-2D-right) correspondences per frame:
 
 1. Detection (on replenishment): FAST corners in the left image, bucketed on a
-   grid for even coverage; FAST corners in the right image; ORB descriptors on
-   both; Hamming matching restricted to the epipolar band (same row +/- tol,
-   positive disparity) with ratio and mutual checks; sub-pixel disparity via a
-   single-level KLT refinement left -> right.
+   grid for even coverage (optionally ranked by the Shi-Tomasi minimum eigenvalue,
+   which predicts how well KLT can track a corner, and topped up with a lower FAST
+   threshold in under-filled cells). Stereo matching either
+   - ``orb``: FAST corners in the right image, ORB descriptors on both, Hamming
+     matching restricted to the epipolar band with ratio and mutual checks, then
+     sub-pixel disparity via single-level KLT; or
+   - ``klt``: pyramidal KLT left -> right seeded with the median disparity of the
+     existing tracks, with a right -> left consistency check (no descriptors; much
+     cheaper on replenishment, as in VINS-Fusion / OpenVINS stereo).
 2. Tracking: for every stereo pair (l0, r0) of the previous frame,
        l0 --KLT--> l1 --KLT--> r1 --KLT--> r0'   (prev L -> cur L -> cur R -> prev R)
    and the track is kept only if the circle closes (|r0' - r0| < tol) and the
@@ -171,6 +176,10 @@ class FastOrbKltFrontend(StereoFrontend):
         klt_window: int = 21,
         klt_levels: int = 4,
         circular_tolerance_px: float = 1.0,
+        stereo_matcher: str = "orb",
+        corner_score: str = "fast",
+        fast_threshold_min: int | None = None,
+        stereo_consistency_px: float = 0.5,
     ) -> None:
         """Configure detection, stereo matching and tracking.
 
@@ -190,7 +199,26 @@ class FastOrbKltFrontend(StereoFrontend):
             klt_window: KLT window size (pixels).
             klt_levels: KLT pyramid levels for temporal tracking.
             circular_tolerance_px: Maximum closing error of the circular L/R check.
+            stereo_matcher: ``orb`` (descriptor matching on the epipolar band) or ``klt`` (KLT left -> right).
+            corner_score: ``fast`` (FAST response) or ``min_eig`` (Shi-Tomasi score) to rank corners per cell.
+            fast_threshold_min: Lower FAST threshold used to top up under-filled cells (None disables).
+            stereo_consistency_px: Maximum right -> left closing error of the ``klt`` stereo matcher.
+
+        Raises:
+            ValueError: If ``stereo_matcher`` or ``corner_score`` is unknown.
         """
+        if stereo_matcher not in ("orb", "klt"):  # Typo guard.
+            raise ValueError(f"stereo_matcher must be 'orb' or 'klt', got '{stereo_matcher}'")
+        if corner_score not in ("fast", "min_eig"):  # Typo guard.
+            raise ValueError(f"corner_score must be 'fast' or 'min_eig', got '{corner_score}'")
+        self._stereo_matcher = stereo_matcher  # Stereo association method.
+        self._corner_score = corner_score  # Ranking of corners within a cell.
+        self._fast_low = (
+            cv2.FastFeatureDetector.create(threshold=fast_threshold_min, nonmaxSuppression=True)
+            if fast_threshold_min is not None and fast_threshold_min < fast_threshold
+            else None
+        )  # Second, more permissive detector for low-texture cells.
+        self._stereo_consistency = stereo_consistency_px  # KLT stereo back-check tolerance.
         self._max_features = max_features  # Track budget.
         self._fast = cv2.FastFeatureDetector.create(threshold=fast_threshold, nonmaxSuppression=True)  # Corner detector.
         self._orb = cv2.ORB.create(nfeatures=max_features * 4, edgeThreshold=19, patchSize=31)  # Descriptor extractor.
@@ -277,9 +305,7 @@ class FastOrbKltFrontend(StereoFrontend):
         Returns:
             Selected keypoints.
         """
-        keypoints = self._fast.detect(image, mask)  # All corners.
-        if not keypoints:  # Textureless image.
-            return []  # Nothing to add.
+        keypoints = list(self._fast.detect(image, mask))  # All corners.
         cols, rows = self._grid  # Grid size.
         height, width = image.shape[:2]  # Image size.
         quota = int(np.ceil(self._max_features / (cols * rows)))  # Target features per cell.
@@ -291,8 +317,32 @@ class FastOrbKltFrontend(StereoFrontend):
         occupied = (
             np.bincount(cell_of(existing[:, 0], existing[:, 1]), minlength=cols * rows) if len(existing) else np.zeros(cols * rows, dtype=int)
         )  # Existing per cell.
+        if self._fast_low is not None:  # Top up cells that the normal threshold leaves under-filled (low texture).
+            found = (
+                np.bincount(cell_of(*np.array([kp.pt for kp in keypoints], dtype=np.float32).T), minlength=cols * rows)
+                if keypoints
+                else np.zeros(cols * rows, dtype=int)
+            )  # Candidates per cell.
+            sparse_cells = np.flatnonzero(found + occupied < quota)  # Cells needing more corners.
+            if sparse_cells.size:  # Restrict the permissive detector to those cells.
+                low_mask = np.zeros_like(mask)  # Detection mask.
+                for cell in sparse_cells:  # Open each sparse cell.
+                    r, c = divmod(int(cell), cols)
+                    low_mask[r * height // rows : (r + 1) * height // rows, c * width // cols : (c + 1) * width // cols] = 255
+                low_mask &= mask  # Keep the exclusion discs around existing tracks.
+                extra = self._fast_low.detect(image, low_mask)  # More permissive corners.
+                seen = {(round(kp.pt[0]), round(kp.pt[1])) for kp in keypoints}  # Avoid duplicates.
+                keypoints += [kp for kp in extra if (round(kp.pt[0]), round(kp.pt[1])) not in seen]
+        if not keypoints:  # Textureless image.
+            return []  # Nothing to add.
         points = np.array([kp.pt for kp in keypoints], dtype=np.float32)  # Corner positions.
-        responses = np.array([kp.response for kp in keypoints], dtype=np.float32)  # Corner strengths.
+        if self._corner_score == "min_eig":  # Shi-Tomasi: rank by trackability rather than FAST contrast.
+            eig = cv2.cornerMinEigenVal(image, blockSize=5, ksize=3)  # Minimum eigenvalue of the structure tensor.
+            ix = np.clip(np.round(points[:, 0]).astype(int), 0, width - 1)
+            iy = np.clip(np.round(points[:, 1]).astype(int), 0, height - 1)
+            responses = eig[iy, ix].astype(np.float32)  # Score per corner.
+        else:  # FAST response.
+            responses = np.array([kp.response for kp in keypoints], dtype=np.float32)  # Corner strengths.
         cells = cell_of(points[:, 0], points[:, 1])  # Cell of each corner.
         order = np.lexsort((-responses, cells))  # Group by cell, strongest first.
         selected: list[cv2.KeyPoint] = []  # Output.
@@ -320,6 +370,8 @@ class FastOrbKltFrontend(StereoFrontend):
         for x, y in existing.left:  # ...except near existing tracks.
             cv2.circle(mask, (int(round(float(x))), int(round(float(y)))), self._min_distance, 0, -1)  # Block a disc.
         left_kps = self._bucketed_fast(left, mask, existing.left)  # Bucketed left corners.
+        if self._stereo_matcher == "klt":  # Descriptor-free stereo association.
+            return self._match_klt(left, right, left_kps, existing)  # KLT left -> right.
         right_kps = list(self._fast.detect(right, None))  # All right corners (candidates).
         if not left_kps or len(right_kps) < 2:  # Nothing to match.
             return StereoTracks.empty()  # No new pairs.
@@ -357,6 +409,30 @@ class FastOrbKltFrontend(StereoFrontend):
             new_left, new_right = new_left[ok], refined[ok]  # Keep refined pairs.
         valid = self._epipolar_ok(new_left, new_right)  # Re-check geometry after refinement.
         return StereoTracks(new_left[valid], new_right[valid])  # New pairs.
+
+    def _match_klt(self, left: ImageArray, right: ImageArray, left_kps: list[cv2.KeyPoint], existing: StereoTracks) -> StereoTracks:
+        """Stereo association by pyramidal KLT left -> right with a right -> left consistency check.
+
+        Args:
+            left: Rectified left image.
+            right: Rectified right image.
+            left_kps: Bucketed left corners.
+            existing: Current tracks (their median disparity seeds the search).
+
+        Returns:
+            New stereo pairs.
+        """
+        if not left_kps:  # Nothing to match.
+            return StereoTracks.empty()
+        points = np.array([kp.pt for kp in left_kps], dtype=np.float32)  # Left corners.
+        seed = float(np.median(existing.disparity)) if len(existing) else 0.0  # Typical disparity of the scene.
+        seed = float(np.clip(seed, self._disparity_range[0], self._disparity_range[1]))  # Within the valid band.
+        guess = points - np.array([[seed, 0.0]], dtype=np.float32)  # Initial right positions.
+        right_pts, ok = self._klt(left, right, points, guess, self._klt_levels)  # Left -> right.
+        back, ok_back = self._klt(right, left, right_pts, points, 1)  # Right -> left check.
+        consistent = np.linalg.norm(back - points, axis=1) < self._stereo_consistency  # Closes on the original corner.
+        keep = ok & ok_back & consistent & self._epipolar_ok(points, right_pts)  # Row and disparity checks.
+        return StereoTracks(points[keep], right_pts[keep])  # New pairs.
 
     def track(
         self,
