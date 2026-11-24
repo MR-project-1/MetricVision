@@ -42,6 +42,13 @@ class OdometryConfig:
             (pure frame-to-frame), ``birth`` keeps each track's 3D point (in world coordinates) from the frame
             where it was first triangulated, so long tracks constrain many poses without chaining their errors;
             ``fused`` additionally fuses each new stereo observation into the anchor by inverse covariance.
+        window_size: Sparse pipeline only: keyframes in the sliding-window bundle adjustment (0 disables BA).
+        window_keyframe_interval: Sparse pipeline only: a window keyframe is inserted every this many frames.
+        window_iterations: Maximum LM iterations of each windowed BA.
+        depth_prior: Sparse pipeline only: add gated monocular depth priors (from the configured depth estimator) to the BA.
+        depth_prior_rel_sigma: Prior standard deviation as a fraction of the prior depth.
+        depth_prior_scale_align: Rescale network depth to the stereo scale per keyframe before gating.
+        depth_prior_gate_sigmas: Per-landmark prior consistency gate, in combined standard deviations.
     """
 
     pnp: PnPConfig = field(default_factory=PnPConfig)  # PnP settings.
@@ -52,6 +59,13 @@ class OdometryConfig:
     lm_right_residuals: bool = True  # Rigid-rig (stereo) residuals on/off.
     lm_covariance_weighting: bool = True  # Covariance whitening on/off.
     sparse_point_anchor: str = "previous"  # previous | birth | fused.
+    window_size: int = 0  # Windowed BA off by default.
+    window_keyframe_interval: int = 3  # Keyframe spacing in frames.
+    window_iterations: int = 8  # BA iteration budget.
+    depth_prior: bool = False  # Monocular depth priors off by default.
+    depth_prior_rel_sigma: float = 0.1  # 10% prior noise.
+    depth_prior_scale_align: bool = True  # Stereo-anchored prior scale.
+    depth_prior_gate_sigmas: float = 3.0  # 3-sigma consistency gate.
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any] | None) -> OdometryConfig:

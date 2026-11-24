@@ -60,6 +60,7 @@ class ExperimentConfig:
         pipeline: ``"dense"`` (pairwise matcher + SGBM keyframe VO) or ``"sparse"`` (stereo front end, frame-to-frame VO).
         stereo_frontend: Which sparse stereo front end to use when ``pipeline == "sparse"``.
         run_name: Output folder name; defaults to the front-end name.
+        prior_depth: Monocular depth network supplying windowed-BA depth priors (sparse pipeline, ``odometry.depth_prior``).
     """
 
     dataset: ComponentConfig  # Dataset selection.
@@ -70,6 +71,7 @@ class ExperimentConfig:
     max_frames: int | None = None  # Frame cap.
     pipeline: str = "dense"  # Which VO pipeline to run.
     stereo_frontend: ComponentConfig = field(default_factory=lambda: ComponentConfig("fast_orb_klt"))  # Sparse front end.
+    prior_depth: ComponentConfig = field(default_factory=lambda: ComponentConfig("depth_anything_v2"))  # Monocular depth network for BA priors.
     run_name: str | None = None  # Output folder override.
 
     def __post_init__(self) -> None:
@@ -120,6 +122,7 @@ class ExperimentConfig:
             pipeline=str(data.get("pipeline", "dense")),  # Dense by default.
             stereo_frontend=ComponentConfig.from_dict(data.get("stereo_frontend") or {"name": "fast_orb_klt"}),  # Sparse front end.
             run_name=data.get("run_name"),  # Optional folder name.
+            prior_depth=ComponentConfig.from_dict(data.get("prior_depth") or {"name": "depth_anything_v2"}),  # Prior network.
         )
 
     @classmethod
@@ -151,6 +154,9 @@ class ExperimentConfig:
         run_name: str | None = None,
         anchor: str | None = None,
         sequence: str | None = None,
+        depth: str | None = None,
+        window: int | None = None,
+        depth_prior: bool | None = None,
     ) -> ExperimentConfig:
         """Return a copy with command-line overrides applied.
 
@@ -168,6 +174,9 @@ class ExperimentConfig:
             run_name: Output folder name.
             anchor: Sparse-pipeline point anchoring (``previous``, ``birth`` or ``fused``).
             sequence: Dataset sequence id for loaders that take one (KITTI: ``00``-``21``).
+            depth: Depth estimator of the dense pipeline; reuses ``prior_depth`` params when the names match.
+            window: Windowed-BA size for the sparse pipeline (0 disables).
+            depth_prior: Enable/disable monocular depth priors in the windowed BA.
 
         Returns:
             The updated configuration.
@@ -191,6 +200,13 @@ class ExperimentConfig:
             config = replace(config, odometry=replace(config.odometry, pnp=replace(config.odometry.pnp, refine=refine)))  # Nested replace.
         if sequence is not None:  # Pick another sequence of the same dataset.
             config = replace(config, dataset=ComponentConfig(config.dataset.name, {**config.dataset.params, "sequence": sequence}))  # Replace it.
+        if depth is not None and depth != config.depth.name:  # Swap the dense pipeline's depth source.
+            params = config.prior_depth.params if depth == config.prior_depth.name else {}  # Network settings live in prior_depth.
+            config = replace(config, depth=ComponentConfig(depth, dict(params)))  # Replace it.
+        if window is not None:  # Windowed BA size.
+            config = replace(config, odometry=replace(config.odometry, window_size=window))  # Nested replace.
+        if depth_prior is not None:  # Depth priors on/off.
+            config = replace(config, odometry=replace(config.odometry, depth_prior=depth_prior))  # Nested replace.
         if anchor is not None:  # Switch sparse point anchoring (for ablations).
             config = replace(config, odometry=replace(config.odometry, sparse_point_anchor=anchor))  # Nested replace.
         if run_name is not None:  # Name the output folder.

@@ -42,11 +42,18 @@ LABELS = {  # Human-readable run names (fallback: the folder name).
     "sparse_birth_lm": "Sparse birth anchors, rig-LM",
     "sparse_fused_opencv": "Sparse fused anchors, OpenCV-LM",
     "sparse_fused_lm": "Sparse fused anchors, rig-LM (proposed)",
+    "dense_orb_lm_mono": "Mono metric VO: ORB + DA-V2 depth (left only)",
+    "sparse_fused_lm_ba5": "Sparse fused + windowed BA (5 KF)",
+    "sparse_fused_lm_ba5_prior": "Sparse fused + windowed BA + mono depth priors",
 }
 ORDER = list(LABELS)  # Table/legend order.
 KEY_RUNS = ("dense_orb_lm", "sparse_f2f_lm", "sparse_fused_lm")  # Uncluttered comparison panel.
 COLOURS = dict(
-    zip(ORDER, ["#9e9e9e", "#1f77b4", "#17becf", "#ffbb78", "#ff7f0e", "#d62728", "#9467bd", "#8c564b", "#2ca02c"], strict=True)
+    zip(
+        ORDER,
+        ["#9e9e9e", "#1f77b4", "#17becf", "#ffbb78", "#ff7f0e", "#d62728", "#9467bd", "#8c564b", "#2ca02c", "#e377c2", "#bcbd22", "#000080"],
+        strict=True,
+    )
 )  # One colour per method in every plot.
 
 
@@ -90,15 +97,18 @@ def _label(run: str) -> str:
     return LABELS.get(run, run)  # Fallback to the folder name.
 
 
-def _runs(dataset_dir: Path) -> list[Path]:
+def _runs(dataset_dir: Path, only: list[str] | None = None) -> list[Path]:
     """List run folders in report order.
 
     Args:
         dataset_dir: ``results/<dataset>``.
+        only: If given, just these runs, in this order.
 
     Returns:
         Run folders that contain a summary.
     """
+    if only:  # Explicit selection.
+        return [dataset_dir / name for name in only if (dataset_dir / name / "summary.json").is_file()]  # Given order.
     runs = [p for p in dataset_dir.iterdir() if (p / "summary.json").is_file()]  # Completed runs only.
     return sorted(runs, key=lambda p: (ORDER.index(p.name) if p.name in ORDER else len(ORDER), p.name))  # Known runs first.
 
@@ -240,6 +250,8 @@ def main() -> None:
     parser.add_argument("--results", type=Path, default=Path("results"))  # Results root.
     parser.add_argument("--out", type=Path, default=Path("docs"))  # Output root.
     parser.add_argument("--config", action="append", default=[], help="<config.yaml>:<dataset root>, once per dataset.")  # Datasets.
+    parser.add_argument("--runs", nargs="+", help="Only these runs, in this order (default: all).")  # Selection.
+    parser.add_argument("--key-runs", nargs="+", help="Runs shown in the uncluttered trajectory panel.")  # Key panel.
     args = parser.parse_args()  # Parse.
     (args.out / "figures").mkdir(parents=True, exist_ok=True)  # Figure folder.
     (args.out / "tables").mkdir(parents=True, exist_ok=True)  # Table folder.
@@ -267,7 +279,8 @@ def main() -> None:
         fig_frames, ax_frames = plt.subplots(2, 1, figsize=(8, 5), sharex=True)  # Per-frame stats.
         fig_ape, ax_ape = plt.subplots(figsize=(8, 3.4))  # Position error along the trajectory.
         timing: list[tuple[str, float, float, float, float]] = []  # (run, match, pose, depth, other) mean ms.
-        for run_dir in _runs(dataset_dir):  # Every run.
+        key_runs = tuple(args.key_runs) if args.key_runs else KEY_RUNS  # Key panel selection.
+        for run_dir in _runs(dataset_dir, args.runs):  # Selected runs.
             summary = json.loads((run_dir / "summary.json").read_text())  # Aggregates.
             errors = summary.get("errors") or {}  # Accuracy.
             row = {  # Table row.
@@ -288,7 +301,7 @@ def main() -> None:
             xyz = aligned.positions_xyz  # Aligned positions.
             colour = _colour(run_dir.name)  # Method colour.
             ax_traj.plot(xyz[:, plane[0]], xyz[:, plane[1]], lw=1.0, color=colour, label=_label(run_dir.name))  # Estimate.
-            if run_dir.name in KEY_RUNS:  # Key methods also in the uncluttered panel and the height plot.
+            if run_dir.name in key_runs:  # Key methods also in the uncluttered panel and the height plot.
                 ax_key.plot(xyz[:, plane[0]], xyz[:, plane[1]], lw=1.6, color=colour, label=_label(run_dir.name))  # Estimate.
                 ax_height.plot(ref.timestamps - gt.timestamps[0], up[1] * xyz[:, up[0]], lw=1.2, color=colour, label=_label(run_dir.name))  # Height.
             travelled = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(ref.positions_xyz, axis=0), axis=1))])  # Ground-truth distance.

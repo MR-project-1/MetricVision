@@ -198,6 +198,14 @@ load_kitti_poses(Path.home() / 'datasets/kitti/poses/05.txt')))"
 
 and for plots of a single run, the evo commands in "Running experiments" above.
 
+## Windowed BA and monocular depth priors (POC)
+
+`--window 5` adds a sliding-window rigid-rig bundle adjustment to the sparse pipeline;
+`--depth-prior` adds RoMeO-style gated monocular depth priors (Depth Anything V2) to it;
+`--pipeline dense --depth depth_anything_v2` runs a left-camera-only monocular metric VO.
+The network parts need `uv sync --extra learned` (PyTorch + transformers, < 250 MiB VRAM).
+Results, figures and commands: [docs/poc/README.md](docs/poc/README.md).
+
 ## Design decisions
  
 **The front end is pairwise.** `FeatureMatcher.match(view_a, view_b)` returns

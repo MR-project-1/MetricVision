@@ -35,6 +35,11 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--sequence", help="Override the dataset sequence (KITTI: 00-21; EuRoC scenes are chosen with --dataset-root)."
     )  # Other sequences.
+    run.add_argument("--depth", help="Override the dense pipeline depth source (sgbm, depth_anything_v2 = monocular metric VO).")  # Mono VO.
+    run.add_argument("--window", type=int, help="Sparse pipeline: windowed BA size in keyframes (0 disables).")  # BA.
+    run.add_argument(
+        "--depth-prior", action=argparse.BooleanOptionalAction, default=None, help="Sparse pipeline: gated monocular depth priors in the BA."
+    )  # Priors.
     run.add_argument("--anchor", choices=["previous", "birth", "fused"], help="Override sparse-pipeline point anchoring.")  # Anchoring ablation.
     run.add_argument("--run-name", help="Output folder name (defaults to the front-end name).")  # Keep ablations apart.
     run.add_argument("--no-progress", action="store_true", help="Hide the progress bar.")  # For logs/CI.
@@ -69,6 +74,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         run_name=args.run_name,  # Optional folder name.
         anchor=args.anchor,  # Optional anchoring swap.
         sequence=args.sequence,  # Optional sequence swap.
+        depth=args.depth,  # Optional depth source.
+        window=args.window,  # Optional BA size.
+        depth_prior=args.depth_prior,  # Optional priors.
     )
     runner = ExperimentRunner(config)  # Build all components.
     summary = runner.run(show_progress=not args.no_progress)  # Run the experiment.

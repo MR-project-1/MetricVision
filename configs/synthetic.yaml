@@ -24,6 +24,14 @@ stereo_frontend:  # Used when pipeline is sparse: FAST + ORB stereo matching, KL
     circular_tolerance_px: 1.0  # Closing error allowed in the circular check.
     epipolar_tolerance_px: 1.5  # Row difference allowed between left and right.
 
+prior_depth:  # Monocular metric depth network: windowed-BA priors (--depth-prior) and mono VO (--pipeline dense --depth depth_anything_v2).
+  name: depth_anything_v2  # Depth Anything V2 metric head; needs `uv sync --extra learned`.
+  params:
+    variant: outdoor  # indoor (Hypersim, <= 20 m) or outdoor (Virtual KITTI 2, <= 80 m).
+    size: small  # ~25M parameters, fp16: well under 1 GB of VRAM.
+    input_size: 392  # Short side of the network input (multiple of 14).
+    max_depth: 80.0  # Ignore predictions beyond this.
+
 depth:
   name: sgbm  # Fixed stereo depth source.
   params:
@@ -36,6 +44,11 @@ odometry:
   essential_threshold_px: 1.0  # Inlier threshold for the front-end quality metric.
   stereo_sigma_px: 0.5  # Pixel/disparity noise for triangulation covariance (weights the LM).
   sparse_point_anchor: fused  # Sparse only: previous (frame-to-frame) | birth (keep first 3D) | fused (inverse-covariance fusion).
+  window_size: 0  # Sparse only: sliding-window BA keyframes (e.g. 5 with --window 5); 0 disables.
+  window_keyframe_interval: 3  # A BA keyframe every this many frames.
+  depth_prior: false  # Sparse only: gated monocular depth priors in the BA (--depth-prior).
+  depth_prior_rel_sigma: 0.1  # Prior std as a fraction of depth.
+  depth_prior_scale_align: true  # Rescale network depth to the stereo scale per keyframe.
   pnp:
     reprojection_error_px: 2.0  # PnP RANSAC inlier threshold.
     iterations: 200  # PnP RANSAC iterations.

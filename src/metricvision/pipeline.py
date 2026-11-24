@@ -156,7 +156,10 @@ class ExperimentRunner:
         self._odometry: StereoVisualOdometry | SparseStereoOdometry  # Either pipeline; both share one interface.
         if config.pipeline == "sparse":  # Sparse stereo front end, frame-to-frame tracking.
             frontend = STEREO_FRONTENDS.create(config.stereo_frontend.name, **config.stereo_frontend.params)  # Front end under test.
-            self._odometry = SparseStereoOdometry(self._dataset.camera, frontend, config.odometry)  # VO pipeline.
+            prior = (
+                DEPTH_ESTIMATORS.create(config.prior_depth.name, **config.prior_depth.params) if config.odometry.depth_prior else None
+            )  # BA priors.
+            self._odometry = SparseStereoOdometry(self._dataset.camera, frontend, config.odometry, prior)  # VO pipeline.
         else:  # Pairwise matcher + dense SGBM depth, keyframe tracking.
             matcher = MATCHERS.create(config.matcher.name, **config.matcher.params)  # Front end under test.
             depth: DepthEstimator = DEPTH_ESTIMATORS.create(config.depth.name, **config.depth.params)  # Fixed depth source.

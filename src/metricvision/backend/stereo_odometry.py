@@ -10,6 +10,10 @@ Per frame:
    anchor: pure frame-to-frame) or kept from each track's birth frame in world
    coordinates (``birth`` anchor), which stops small per-frame biases from chaining.
 4. Only LM inliers survive as tracks; new pairs are detected when tracks run low.
+5. Optionally (``window_size >= 2``), every ``window_keyframe_interval`` frames the frame
+   becomes a keyframe of a sliding-window rigid-rig bundle adjustment over keyframe poses and
+   landmarks, with optional gated monocular depth priors (``depth_prior``, RoMeO-style). The
+   refined keyframe pose is output and the refined landmarks replace the tracking anchors.
 On failure the pose coasts on the motion model, all tracks are re-detected and
 the failure is counted, exactly as in the dense keyframe pipeline.
 """
@@ -19,10 +23,13 @@ from __future__ import annotations  # Postponed evaluation of type hints.
 import time  # Runtime measurements.
 
 import numpy as np  # Array maths.
+import numpy.typing as npt  # Id arrays.
 
+from metricvision.backend.keyframe_window import DepthPriorConfig, KeyframeWindow, WindowStats  # Windowed BA.
 from metricvision.backend.odometry import OdometryConfig, TrackingResult  # Shared settings and result type.
 from metricvision.backend.pose import PnPPoseEstimator  # PnP + RANSAC (+ LM).
 from metricvision.backend.stats import FrameStats  # Per-frame measurements.
+from metricvision.backend.window_ba import WindowBAConfig  # BA settings.
 from metricvision.core.geometry import invert_pose  # Rigid inverse.
 from metricvision.core.stereo import triangulate_rectified, triangulation_covariance  # Sparse triangulation.
 from metricvision.core.types import (  # Shared types.
@@ -35,6 +42,7 @@ from metricvision.core.types import (  # Shared types.
     StereoFrame,
     Trajectory,
 )
+from metricvision.depth.base import DepthEstimator  # Monocular depth priors.
 from metricvision.evaluation.frontend_metrics import essential_inlier_ratio  # Front-end-only metric.
 from metricvision.frontend.stereo_klt import StereoFrontend, StereoTracks  # Front end.
 
@@ -54,13 +62,19 @@ def _elapsed_ms(start: float) -> float:
 class SparseStereoOdometry:
     """Frame-to-frame stereo VO driven by a sparse ``StereoFrontend``; same API as ``StereoVisualOdometry``."""
 
-    def __init__(self, camera: StereoCamera, frontend: StereoFrontend, config: OdometryConfig | None = None) -> None:
+    def __init__(
+        self, camera: StereoCamera, frontend: StereoFrontend, config: OdometryConfig | None = None, depth_estimator: DepthEstimator | None = None
+    ) -> None:
         """Wire the pipeline together.
 
         Args:
             camera: Rectified stereo camera.
             frontend: Sparse stereo front end.
-            config: Back-end settings (PnP/LM thresholds, stereo noise); defaults when omitted.
+            config: Back-end settings (PnP/LM thresholds, stereo noise, windowed BA); defaults when omitted.
+            depth_estimator: Monocular depth network for BA priors (used only with ``depth_prior``).
+
+        Raises:
+            ValueError: If the anchoring mode is unknown or depth priors are requested without an estimator.
         """
         self._camera = camera  # Camera model.
         self._camera_matrix = camera.intrinsic_matrix  # Cached K.
@@ -69,6 +83,9 @@ class SparseStereoOdometry:
         self._pose_estimator = PnPPoseEstimator(self._config.pnp)  # PnP solver.
         if self._config.sparse_point_anchor not in ("previous", "birth", "fused"):  # Typo guard.
             raise ValueError(f"sparse_point_anchor must be 'previous', 'birth' or 'fused', got '{self._config.sparse_point_anchor}'")  # Clear error.
+        if self._config.depth_prior and depth_estimator is None:  # Priors need a network.
+            raise ValueError("depth_prior requires a depth estimator (e.g. --depth depth_anything_v2)")  # Clear error.
+        self._depth_estimator = depth_estimator if self._config.depth_prior else None  # Only used for priors.
         self.reset()  # Initialise state.
 
     @property
@@ -110,6 +127,55 @@ class SparseStereoOdometry:
         self._trajectory = Trajectory()  # Output.
         self._num_failures = 0  # Counters.
         self._num_keyframes = 0  # Counters.
+        self._ids: npt.NDArray[np.int64] = np.zeros(0, dtype=np.int64)  # Persistent id per track (parallel to the tracks).
+        self._next_id = 0  # Next unused id.
+        self._frames_since_window_keyframe = 0  # Window keyframe spacing.
+        self._window = self._new_window()  # Windowed BA state (None when disabled).
+
+    def _new_window(self) -> KeyframeWindow | None:
+        """Create an empty keyframe window, or None when windowed BA is disabled.
+
+        Returns:
+            The window.
+        """
+        if self._config.window_size < 2:  # Disabled.
+            return None
+        prior = DepthPriorConfig(  # Gating settings from the odometry config.
+            rel_sigma=self._config.depth_prior_rel_sigma,
+            gate_sigmas=self._config.depth_prior_gate_sigmas,
+            scale_align=self._config.depth_prior_scale_align,
+        )
+        ba = WindowBAConfig(max_iterations=self._config.window_iterations, pixel_sigma=self._config.pnp.lm_pixel_sigma)  # BA settings.
+        return KeyframeWindow(self._config.window_size, ba, prior)  # Empty window.
+
+    def _window_keyframe(self, frame: StereoFrame, pose: FloatArray) -> tuple[FloatArray | None, WindowStats, float, float]:
+        """Insert the current frame into the window and run windowed BA.
+
+        Args:
+            frame: Current frame (its tracks are already in ``self._tracks``).
+            pose: Current T_world,cam.
+
+        Returns:
+            Refined T_world,cam (None if BA did not run), statistics, network time (ms) and BA time (ms).
+        """
+        assert self._window is not None  # Caller checks.
+        depth_ms = 0.0  # Network time.
+        depth_map = None  # No priors by default.
+        if self._depth_estimator is not None:  # Monocular metric depth for this keyframe.
+            start = time.perf_counter()  # Time the network.
+            depth_map = self._depth_estimator.compute(frame.left, frame.right, self._camera)  # (H, W) metres.
+            depth_ms = _elapsed_ms(start)  # Network time.
+        start = time.perf_counter()  # Time BA (including bookkeeping).
+        pixels = np.column_stack([self._tracks.left, self._tracks.right[:, 0]]).astype(np.float64)  # (u_l, v_l, u_r).
+        stats = self._window.add_keyframe(frame.index, pose, self._ids, pixels, self._anchors, self._anchor_covariances, depth_map)  # Insert.
+        refined, stats = self._window.optimise(self._camera_matrix, self._camera.baseline, stats)  # BA.
+        if refined is not None:  # Refined landmarks become the tracking anchors.
+            stored = [self._window.point(int(i)) for i in self._ids]  # Window estimates (None if not in the window).
+            updated = np.array([p is not None for p in stored], dtype=bool)  # Which tracks have them.
+            if updated.any():  # Copy them over.
+                self._anchors = self._anchors.copy()  # Do not alias.
+                self._anchors[updated] = np.array([p for p in stored if p is not None])  # Refined points.
+        return refined, stats, depth_ms, _elapsed_ms(start)  # Report.
 
     def _replenish(self, frame: StereoFrame, tracks: StereoTracks) -> tuple[StereoTracks, bool, float]:
         """Detect new stereo pairs when tracks run low.
@@ -146,15 +212,25 @@ class SparseStereoOdometry:
         rotation, translation = world_from_camera[:3, :3], world_from_camera[:3, 3]  # Pose parts.
         return points @ rotation.T + translation, rotation @ covariances @ rotation.T  # World frame (NaN propagates).
 
-    def _set_tracks(self, tracks: StereoTracks, world_from_camera: FloatArray, anchors: tuple[FloatArray, FloatArray] | None) -> None:
+    def _set_tracks(
+        self,
+        tracks: StereoTracks,
+        world_from_camera: FloatArray,
+        anchors: tuple[FloatArray, FloatArray] | None,
+        ids: npt.NDArray[np.int64] | None = None,
+    ) -> None:
         """Store tracks for the next frame, anchoring new ones at the current pose.
 
         Args:
             tracks: All pairs in the current frame (survivors first, then new detections).
             world_from_camera: Current T_world_cam.
             anchors: Anchors of the leading survivor rows, or None if there are none.
+            ids: Ids of the leading survivor rows (new rows get fresh ids).
         """
         kept = 0 if anchors is None else len(anchors[0])  # Survivors with existing anchors.
+        fresh = np.arange(self._next_id, self._next_id + len(tracks) - kept, dtype=np.int64)  # Ids for new tracks.
+        self._next_id += fresh.size  # Reserve them.
+        self._ids = fresh if ids is None or kept == 0 else np.concatenate([ids[:kept], fresh])  # Parallel to the tracks.
         new_points, new_cov = self._to_world(tracks.subset(np.arange(len(tracks)) >= kept), world_from_camera)  # Anchor new tracks here.
         self._tracks = tracks  # Pairs.
         self._anchors = new_points if anchors is None else np.vstack([anchors[0], new_points])  # Points.
@@ -219,6 +295,9 @@ class SparseStereoOdometry:
             self._previous = (frame.left, frame.right)  # Remember images.
             pose = np.eye(4, dtype=np.float64)  # World = first camera.
             self._set_tracks(tracks, pose, None)  # Anchor them at the origin.
+            if self._window is not None:  # First window keyframe (gauge).
+                _, _, prior_ms, _ = self._window_keyframe(frame, pose)  # Nothing to optimise yet.
+                depth_ms += prior_ms  # Network time.
             self._trajectory.append(frame.timestamp, pose)  # Record.
             stats = FrameStats(frame.index, frame.timestamp, 0, 0, 0, float("nan"), True, True, 0.0, 0.0, depth_ms, _elapsed_ms(start))  # Init stats.
             return TrackingResult(pose, stats)  # Report.
@@ -236,6 +315,7 @@ class SparseStereoOdometry:
         assert self._previous is not None  # Guaranteed by process().
         start = time.perf_counter()  # Whole-step timer.
         tracks = self._tracks  # Previous-frame pairs.
+        track_ids = self._ids  # Their ids.
         if self._config.sparse_point_anchor in ("birth", "fused"):  # Points anchored where each track was born (and fused since).
             points_world, cov_world = self._anchors, self._anchor_covariances  # Stored anchors.
         else:  # Pure frame-to-frame: re-triangulate in the previous frame.
@@ -272,6 +352,7 @@ class SparseStereoOdometry:
             inliers = estimate.refined_inlier_mask if estimate.refined_inlier_mask is not None else estimate.inlier_mask  # Best available inlier set.
             survivors = observed.subset(inliers)  # Outliers (and moving objects) stop being tracked.
             survivor_anchors: tuple[FloatArray, FloatArray] = (points_3d[inliers], covariances[inliers])  # Their anchors travel with them.
+            survivor_ids = track_ids[keep][usable][inliers]  # And their ids.
             if self._config.sparse_point_anchor == "fused":  # Fuse this frame's stereo triangulation into each anchor.
                 survivor_anchors = self._fuse(survivor_anchors, survivors, pose)  # Inverse-covariance update.
         else:  # Tracking failure.
@@ -279,12 +360,25 @@ class SparseStereoOdometry:
             self._num_failures += 1  # Count it.
             survivors = StereoTracks.empty()  # Re-detect everything.
             survivor_anchors = (np.zeros((0, 3)), np.zeros((0, 3, 3)))  # No anchors survive.
-        self._velocity = invert_pose(self._last_pose) @ pose  # Update the motion model.
-        self._last_pose = pose  # Remember.
+            survivor_ids = np.zeros(0, dtype=np.int64)  # No ids survive.
+            self._window = self._new_window()  # Start a new BA segment after a failure.
+        previous_pose = self._last_pose  # T_world_prev, for the motion model.
         new_tracks, replenished, depth_ms = self._replenish(frame, survivors)  # Top up features.
         if not estimate.success and not replenished:  # Always re-detect after a failure.
             new_tracks = self._frontend.detect(frame.left, frame.right, StereoTracks.empty())  # Fresh start.
-        self._set_tracks(new_tracks, pose, survivor_anchors)  # Keep survivors' anchors, anchor new tracks at this pose.
+        self._set_tracks(new_tracks, pose, survivor_anchors, survivor_ids)  # Keep survivors' anchors and ids, anchor new tracks here.
+        window_stats, ba_ms = WindowStats(), 0.0  # No BA by default.
+        self._frames_since_window_keyframe += 1  # Keyframe spacing.
+        if self._window is not None and (
+            self._frames_since_window_keyframe >= self._config.window_keyframe_interval or self._window.num_keyframes == 0
+        ):
+            self._frames_since_window_keyframe = 0  # Reset spacing.
+            refined, window_stats, prior_ms, ba_ms = self._window_keyframe(frame, pose)  # Insert + BA.
+            depth_ms += prior_ms  # Network time counts as depth time.
+            if refined is not None:  # Output the BA pose for this keyframe.
+                pose = refined  # Refined T_world,cam.
+        self._velocity = invert_pose(previous_pose) @ pose  # Update the motion model.
+        self._last_pose = pose  # Remember.
         self._previous = (frame.left, frame.right)  # Advance.
         total_ms = _elapsed_ms(start)  # Stop before measurement-only work.
 
@@ -309,7 +403,11 @@ class SparseStereoOdometry:
             is_keyframe=replenished,  # Replenishment frame.
             match_ms=match_ms,
             pose_ms=pose_ms,
-            depth_ms=depth_ms,  # Stereo detection + matching time.
+            depth_ms=depth_ms,  # Stereo detection + matching (+ depth network) time.
             total_ms=total_ms,
+            ba_ms=ba_ms,
+            ba_landmarks=window_stats.landmarks,
+            prior_factors=window_stats.prior_factors,
+            prior_scale=window_stats.prior_scale,
         )
         return TrackingResult(pose, stats)  # Report.

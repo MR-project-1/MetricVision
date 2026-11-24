@@ -16,6 +16,12 @@ dependencies = [
 [project.scripts]
 metricvision = "metricvision.cli:main"  # Installs a `metricvision` command that calls metricvision.cli.main().
 
+[project.optional-dependencies]
+learned = [
+    "torch>=2.4",
+    "transformers>=4.46",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=8.0",  # Test runner.
@@ -51,3 +57,7 @@ warn_unused_ignores = true  # Keep `# type: ignore` comments honest.
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]  # Where pytest looks for tests.
+
+[[tool.mypy.overrides]]
+module = ["torch", "torch.*", "transformers", "transformers.*"]  # Optional `learned` extra: huge typed packages.
+follow_imports = "skip"  # Do not analyse them (keeps mypy fast); they are only used in depth/mono_metric.py.

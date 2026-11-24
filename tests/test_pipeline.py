@@ -88,3 +88,20 @@ def test_sparse_pipeline_and_rig_lm_track_accurately(pipeline: str, refine: str,
     assert summary.errors is not None and summary.errors.ate_rmse_m < 0.02  # Accurate.
     assert summary.pipeline == pipeline and summary.refine == refine  # Recorded in the summary.
     assert runner.output_dir.name == f"{pipeline}_{refine}"  # Run name used for the folder.
+
+
+def test_sparse_pipeline_with_windowed_ba_tracks_accurately(tmp_path: Path) -> None:
+    """The sparse pipeline with a 5-keyframe windowed BA must still track the synthetic sequence accurately.
+
+    Args:
+        tmp_path: Pytest-provided temporary folder.
+    """
+    config = replace(  # Sparse, fused anchors, rig LM, windowed BA.
+        _config("orb", tmp_path),
+        pipeline="sparse",
+        odometry=OdometryConfig(pnp=PnPConfig(refine="lm"), sparse_point_anchor="fused", window_size=5),
+        run_name="sparse_ba",
+    )
+    summary = ExperimentRunner(config).run(show_progress=False)  # Run it.
+    assert summary.num_tracking_failures == 0  # Never lose track.
+    assert summary.errors is not None and summary.errors.ate_rmse_m < 0.02  # Accurate.

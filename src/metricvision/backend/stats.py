@@ -22,6 +22,10 @@ class FrameStats:
         pose_ms: 3D lifting + PnP time.
         depth_ms: Stereo depth time (non-zero only on keyframes).
         total_ms: Whole pipeline time for the frame, excluding measurement-only metrics.
+        ba_ms: Windowed bundle adjustment time (sparse pipeline keyframes only).
+        ba_landmarks: Landmarks optimised by the windowed BA at this frame (0 if it did not run).
+        prior_factors: Monocular depth-prior factors in that BA.
+        prior_scale: Median stereo / network depth ratio at this keyframe (NaN if not computed).
     """
 
     frame_index: int  # Position in sequence.
@@ -36,6 +40,10 @@ class FrameStats:
     pose_ms: float  # Pose-estimation runtime.
     depth_ms: float  # Depth runtime.
     total_ms: float  # End-to-end runtime.
+    ba_ms: float = 0.0  # BA runtime.
+    ba_landmarks: int = 0  # BA size.
+    prior_factors: int = 0  # Depth priors used.
+    prior_scale: float = float("nan")  # Network scale check.
 
     def to_dict(self) -> dict[str, float | int | bool]:
         """Convert to a plain dictionary for CSV output.
