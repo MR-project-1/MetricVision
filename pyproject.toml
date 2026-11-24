@@ -18,6 +18,9 @@ metricvision = "metricvision.cli:main"  # Installs a `metricvision` command that
 
 [project.optional-dependencies]
 learned = [
+    "einops>=0.8",
+    "lightglue",
+    "roma>=1.5",
     "torch>=2.4",
     "transformers>=4.46",
 ]
@@ -58,6 +61,14 @@ warn_unused_ignores = true  # Keep `# type: ignore` comments honest.
 [tool.pytest.ini_options]
 testpaths = ["tests"]  # Where pytest looks for tests.
 
+[tool.uv.sources]
+lightglue = { git = "https://github.com/cvg/LightGlue.git", rev = "5a650c444718caffc2669dc0094cde908f42dd73" }
+
 [[tool.mypy.overrides]]
 module = ["torch", "torch.*", "transformers", "transformers.*"]  # Optional `learned` extra: huge typed packages.
 follow_imports = "skip"  # Do not analyse them (keeps mypy fast); they are only used in depth/mono_metric.py.
+
+[tool.uv]
+# LightGlue depends on the GUI build `opencv-python`, which would overwrite our `opencv-python-headless`
+# (same `cv2` package) and needs libGL in containers. The headless build provides everything it uses.
+override-dependencies = ["opencv-python; sys_platform == 'never'"]

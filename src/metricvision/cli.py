@@ -40,6 +40,15 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--depth-prior", action=argparse.BooleanOptionalAction, default=None, help="Sparse pipeline: gated monocular depth priors in the BA."
     )  # Priors.
+    run.add_argument(
+        "--dynamic-mask", action=argparse.BooleanOptionalAction, default=None, help="Mask people and vehicles (SegFormer, Cityscapes)."
+    )  # Dynamics.
+    run.add_argument(
+        "--dynamic-gate",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Sparse pipeline: drop tracks inconsistent with their landmark (motion/occlusion).",
+    )  # Dynamics.
     run.add_argument("--anchor", choices=["previous", "birth", "fused"], help="Override sparse-pipeline point anchoring.")  # Anchoring ablation.
     run.add_argument("--run-name", help="Output folder name (defaults to the front-end name).")  # Keep ablations apart.
     run.add_argument("--no-progress", action="store_true", help="Hide the progress bar.")  # For logs/CI.
@@ -77,6 +86,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         depth=args.depth,  # Optional depth source.
         window=args.window,  # Optional BA size.
         depth_prior=args.depth_prior,  # Optional priors.
+        dynamic_mask=args.dynamic_mask,  # Optional masking.
+        dynamic_gate=args.dynamic_gate,  # Optional gate.
     )
     runner = ExperimentRunner(config)  # Build all components.
     summary = runner.run(show_progress=not args.no_progress)  # Run the experiment.

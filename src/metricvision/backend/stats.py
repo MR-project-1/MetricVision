@@ -26,6 +26,7 @@ class FrameStats:
         ba_landmarks: Landmarks optimised by the windowed BA at this frame (0 if it did not run).
         prior_factors: Monocular depth-prior factors in that BA.
         prior_scale: Median stereo / network depth ratio at this keyframe (NaN if not computed).
+        dynamic_rejected: Tracks or matches dropped by the dynamic-object mask and the dynamic/occlusion gate.
     """
 
     frame_index: int  # Position in sequence.
@@ -44,6 +45,7 @@ class FrameStats:
     ba_landmarks: int = 0  # BA size.
     prior_factors: int = 0  # Depth priors used.
     prior_scale: float = float("nan")  # Network scale check.
+    dynamic_rejected: int = 0  # Dynamic/occlusion rejections.
 
     def to_dict(self) -> dict[str, float | int | bool]:
         """Convert to a plain dictionary for CSV output.

@@ -61,6 +61,7 @@ class ExperimentConfig:
         stereo_frontend: Which sparse stereo front end to use when ``pipeline == "sparse"``.
         run_name: Output folder name; defaults to the front-end name.
         prior_depth: Monocular depth network supplying windowed-BA depth priors (sparse pipeline, ``odometry.depth_prior``).
+        dynamic_masker: Segmentation network masking movable objects (``odometry.dynamic_mask``).
     """
 
     dataset: ComponentConfig  # Dataset selection.
@@ -72,6 +73,7 @@ class ExperimentConfig:
     pipeline: str = "dense"  # Which VO pipeline to run.
     stereo_frontend: ComponentConfig = field(default_factory=lambda: ComponentConfig("fast_orb_klt"))  # Sparse front end.
     prior_depth: ComponentConfig = field(default_factory=lambda: ComponentConfig("depth_anything_v2"))  # Monocular depth network for BA priors.
+    dynamic_masker: ComponentConfig = field(default_factory=lambda: ComponentConfig("segformer_cityscapes"))  # Movable-object segmentation.
     run_name: str | None = None  # Output folder override.
 
     def __post_init__(self) -> None:
@@ -123,6 +125,7 @@ class ExperimentConfig:
             stereo_frontend=ComponentConfig.from_dict(data.get("stereo_frontend") or {"name": "fast_orb_klt"}),  # Sparse front end.
             run_name=data.get("run_name"),  # Optional folder name.
             prior_depth=ComponentConfig.from_dict(data.get("prior_depth") or {"name": "depth_anything_v2"}),  # Prior network.
+            dynamic_masker=ComponentConfig.from_dict(data.get("dynamic_masker") or {"name": "segformer_cityscapes"}),  # Masking network.
         )
 
     @classmethod
@@ -157,6 +160,8 @@ class ExperimentConfig:
         depth: str | None = None,
         window: int | None = None,
         depth_prior: bool | None = None,
+        dynamic_mask: bool | None = None,
+        dynamic_gate: bool | None = None,
     ) -> ExperimentConfig:
         """Return a copy with command-line overrides applied.
 
@@ -177,6 +182,8 @@ class ExperimentConfig:
             depth: Depth estimator of the dense pipeline; reuses ``prior_depth`` params when the names match.
             window: Windowed-BA size for the sparse pipeline (0 disables).
             depth_prior: Enable/disable monocular depth priors in the windowed BA.
+            dynamic_mask: Enable/disable semantic masking of movable objects.
+            dynamic_gate: Enable/disable the geometric dynamic/occlusion gate (sparse pipeline).
 
         Returns:
             The updated configuration.
@@ -207,6 +214,10 @@ class ExperimentConfig:
             config = replace(config, odometry=replace(config.odometry, window_size=window))  # Nested replace.
         if depth_prior is not None:  # Depth priors on/off.
             config = replace(config, odometry=replace(config.odometry, depth_prior=depth_prior))  # Nested replace.
+        if dynamic_mask is not None:  # Semantic masking on/off.
+            config = replace(config, odometry=replace(config.odometry, dynamic_mask=dynamic_mask))  # Nested replace.
+        if dynamic_gate is not None:  # Geometric gate on/off.
+            config = replace(config, odometry=replace(config.odometry, dynamic_gate=dynamic_gate))  # Nested replace.
         if anchor is not None:  # Switch sparse point anchoring (for ablations).
             config = replace(config, odometry=replace(config.odometry, sparse_point_anchor=anchor))  # Nested replace.
         if run_name is not None:  # Name the output folder.

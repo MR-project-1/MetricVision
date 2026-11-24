@@ -22,6 +22,7 @@ from metricvision.core.types import (  # Shared types.
     Trajectory,
 )
 from metricvision.depth.base import DepthEstimator  # Fixed depth source.
+from metricvision.dynamic import DynamicMasker, pixels_in_mask  # Movable-object masking.
 from metricvision.evaluation.frontend_metrics import essential_inlier_ratio  # Front-end-only metric.
 from metricvision.frontend.base import FeatureMatcher  # The component under test.
 
@@ -49,6 +50,11 @@ class OdometryConfig:
         depth_prior_rel_sigma: Prior standard deviation as a fraction of the prior depth.
         depth_prior_scale_align: Rescale network depth to the stereo scale per keyframe before gating.
         depth_prior_gate_sigmas: Per-landmark prior consistency gate, in combined standard deviations.
+        dynamic_mask: Mask potentially moving objects (people, vehicles) with a segmentation network: no features
+            are detected or tracked there, and matches landing on them are dropped (both pipelines).
+        dynamic_gate: Sparse pipeline, fused anchors: drop a track when its new stereo triangulation is inconsistent
+            with its landmark (Mahalanobis test), i.e. the point moved or the track jumped onto an occluder.
+        dynamic_gate_chi2: Threshold of that test on the squared Mahalanobis distance (3 dof).
     """
 
     pnp: PnPConfig = field(default_factory=PnPConfig)  # PnP settings.
@@ -66,6 +72,9 @@ class OdometryConfig:
     depth_prior_rel_sigma: float = 0.1  # 10% prior noise.
     depth_prior_scale_align: bool = True  # Stereo-anchored prior scale.
     depth_prior_gate_sigmas: float = 3.0  # 3-sigma consistency gate.
+    dynamic_mask: bool = False  # Semantic masking of movable objects off by default.
+    dynamic_gate: bool = False  # Geometric dynamic/occlusion gate off by default.
+    dynamic_gate_chi2: float = 16.27  # chi^2(3 dof, 99.9%).
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any] | None) -> OdometryConfig:
@@ -92,12 +101,14 @@ class Keyframe:
         view: Left image with identifier (so the front end can reuse cached features).
         depth: Stereo depth map of the left image, metres, NaN where invalid.
         world_from_camera: Pose T_world_kf.
+        dynamic_mask: Mask of potentially moving objects in the keyframe image (None when masking is off).
     """
 
     frame_index: int  # Source frame.
     view: ImageView  # Left image.
     depth: Float32Array  # Depth map.
     world_from_camera: FloatArray  # Pose.
+    dynamic_mask: BoolArray | None = None  # Movable-object mask.
 
 
 @dataclass(frozen=True)
@@ -134,6 +145,7 @@ class StereoVisualOdometry:
         matcher: FeatureMatcher,
         depth_estimator: DepthEstimator,
         config: OdometryConfig | None = None,
+        masker: DynamicMasker | None = None,
     ) -> None:
         """Wire the pipeline together.
 
@@ -142,6 +154,7 @@ class StereoVisualOdometry:
             matcher: Front end under test.
             depth_estimator: Fixed stereo depth source.
             config: Back-end settings; defaults are used when omitted.
+            masker: Segmentation of movable objects (used only with ``dynamic_mask``).
         """
         self._camera = camera  # Camera model.
         self._camera_matrix = camera.intrinsic_matrix  # Cached K.
@@ -149,6 +162,7 @@ class StereoVisualOdometry:
         self._depth_estimator = depth_estimator  # Depth source.
         self._config = config or OdometryConfig()  # Settings.
         self._pose_estimator = PnPPoseEstimator(self._config.pnp)  # PnP solver.
+        self._masker = masker if self._config.dynamic_mask else None  # Movable-object masking.
         self._keyframe_policy = KeyframePolicy(self._config.keyframe)  # Keyframe policy.
         self._keyframe: Keyframe | None = None  # No keyframe until the first frame arrives.
         self._last_pose = np.eye(4, dtype=np.float64)  # Pose of the previous frame, T_world_prev.
@@ -207,12 +221,13 @@ class StereoVisualOdometry:
             return self._initialize(frame)  # Becomes the first keyframe at the origin.
         return self._track(frame)  # Normal tracking.
 
-    def _create_keyframe(self, frame: StereoFrame, world_from_camera: FloatArray) -> float:
+    def _create_keyframe(self, frame: StereoFrame, world_from_camera: FloatArray, dynamic_mask: BoolArray | None = None) -> float:
         """Make ``frame`` the new keyframe, computing its stereo depth.
 
         Args:
             frame: Frame to promote.
             world_from_camera: Its pose T_world_cam.
+            dynamic_mask: Movable-object mask of the frame, if masking is on.
 
         Returns:
             Time spent computing depth, in milliseconds.
@@ -220,7 +235,9 @@ class StereoVisualOdometry:
         start = time.perf_counter()  # Time the depth computation.
         depth = self._depth_estimator.compute(frame.left, frame.right, self._camera)  # Dense depth for the left image.
         depth_ms = _elapsed_ms(start)  # Stop the timer.
-        self._keyframe = Keyframe(frame.index, ImageView(frame.index, frame.left), depth, world_from_camera.copy())  # Store the keyframe.
+        self._keyframe = Keyframe(
+            frame.index, ImageView(frame.index, frame.left), depth, world_from_camera.copy(), dynamic_mask
+        )  # Store the keyframe.
         self._num_keyframes += 1  # Count it.
         return depth_ms  # Report the cost.
 
@@ -235,7 +252,8 @@ class StereoVisualOdometry:
         """
         start = time.perf_counter()  # Time the whole step.
         pose = np.eye(4, dtype=np.float64)  # World frame = first camera frame.
-        depth_ms = self._create_keyframe(frame, pose)  # First keyframe.
+        first_mask = self._masker.mask(frame.left) if self._masker is not None else None  # Movable objects in the first frame.
+        depth_ms = self._create_keyframe(frame, pose, first_mask)  # First keyframe.
         self._last_pose = pose  # Seed the motion model.
         self._trajectory.append(frame.timestamp, pose)  # Record the pose.
         stats = FrameStats(  # Nothing is matched on the first frame.
@@ -293,6 +311,14 @@ class StereoVisualOdometry:
         match_start = time.perf_counter()  # Time the front end.
         matches = self._matcher.match(keyframe.view, ImageView(frame.index, frame.left))  # Keyframe -> current correspondences.
         self._matcher.synchronize()  # Wait for GPU work so the timing is honest.
+        dynamic_rejected, current_mask = 0, None  # Movable-object filtering (off by default).
+        if self._masker is not None:  # Drop matches on people and vehicles in either image.
+            current_mask = self._masker.mask(frame.left)  # Current frame.
+            on_dynamic = pixels_in_mask(current_mask, matches.points_b)  # Lands on a movable object now...
+            if keyframe.dynamic_mask is not None:  # ...or came from one in the keyframe.
+                on_dynamic |= pixels_in_mask(keyframe.dynamic_mask, matches.points_a)
+            dynamic_rejected = int(on_dynamic.sum())  # Count them.
+            matches = matches.subset(~on_dynamic)  # Keep static matches.
         match_ms = _elapsed_ms(match_start)  # Front-end time.
 
         pose_start = time.perf_counter()  # Time lifting + PnP.
@@ -324,7 +350,7 @@ class StereoVisualOdometry:
             estimate.num_inliers,
             frames_since,  # T_kf_cur, support, age.
         )
-        depth_ms = self._create_keyframe(frame, pose) if insert else 0.0  # Depth is only needed for keyframes.
+        depth_ms = self._create_keyframe(frame, pose, current_mask) if insert else 0.0  # Depth is only needed for keyframes.
         total_ms = _elapsed_ms(start)  # Stop before measurement-only work below.
 
         ratio = (  # Front-end quality metric, excluded from runtime.
@@ -347,5 +373,6 @@ class StereoVisualOdometry:
             pose_ms=pose_ms,
             depth_ms=depth_ms,
             total_ms=total_ms,  # Timings.
+            dynamic_rejected=dynamic_rejected,  # Matches dropped on movable objects.
         )
         return TrackingResult(pose, stats)  # Report.

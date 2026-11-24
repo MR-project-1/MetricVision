@@ -104,13 +104,14 @@ class StereoFrontend(ABC):
         """
 
     @abstractmethod
-    def detect(self, left: ImageArray, right: ImageArray, existing: StereoTracks) -> StereoTracks:
+    def detect(self, left: ImageArray, right: ImageArray, existing: StereoTracks, forbidden: BoolArray | None = None) -> StereoTracks:
         """Detect new stereo pairs away from existing tracks.
 
         Args:
             left: Rectified left image.
             right: Rectified right image.
             existing: Pairs already tracked in this frame (new ones avoid them).
+            forbidden: Optional (H, W) mask of regions where no features may be detected (e.g. moving objects).
 
         Returns:
             Newly detected pairs only.
@@ -305,13 +306,14 @@ class FastOrbKltFrontend(StereoFrontend):
             rank += 1  # Next rank.
         return selected  # Bucketed corners.
 
-    def detect(self, left: ImageArray, right: ImageArray, existing: StereoTracks) -> StereoTracks:
+    def detect(self, left: ImageArray, right: ImageArray, existing: StereoTracks, forbidden: BoolArray | None = None) -> StereoTracks:
         """Detect FAST corners, describe with ORB and match along epipolar lines.
 
         Args:
             left: Rectified left image.
             right: Rectified right image.
             existing: Pairs already tracked in this frame.
+            forbidden: Optional (H, W) mask of regions where no features may be detected.
 
         Returns:
             Newly detected stereo pairs.
@@ -319,6 +321,8 @@ class FastOrbKltFrontend(StereoFrontend):
         mask = np.full(left.shape[:2], 255, dtype=np.uint8)  # Allow detection everywhere...
         for x, y in existing.left:  # ...except near existing tracks.
             cv2.circle(mask, (int(round(float(x))), int(round(float(y)))), self._min_distance, 0, -1)  # Block a disc.
+        if forbidden is not None:  # E.g. moving objects.
+            mask[forbidden] = 0  # No detections there.
         left_kps = self._bucketed_fast(left, mask, existing.left)  # Bucketed left corners.
         right_kps = list(self._fast.detect(right, None))  # All right corners (candidates).
         if not left_kps or len(right_kps) < 2:  # Nothing to match.

@@ -43,6 +43,7 @@ from metricvision.core.types import (  # Shared types.
     Trajectory,
 )
 from metricvision.depth.base import DepthEstimator  # Monocular depth priors.
+from metricvision.dynamic import DynamicMasker, pixels_in_mask  # Movable-object masking.
 from metricvision.evaluation.frontend_metrics import essential_inlier_ratio  # Front-end-only metric.
 from metricvision.frontend.stereo_klt import StereoFrontend, StereoTracks  # Front end.
 
@@ -63,7 +64,12 @@ class SparseStereoOdometry:
     """Frame-to-frame stereo VO driven by a sparse ``StereoFrontend``; same API as ``StereoVisualOdometry``."""
 
     def __init__(
-        self, camera: StereoCamera, frontend: StereoFrontend, config: OdometryConfig | None = None, depth_estimator: DepthEstimator | None = None
+        self,
+        camera: StereoCamera,
+        frontend: StereoFrontend,
+        config: OdometryConfig | None = None,
+        depth_estimator: DepthEstimator | None = None,
+        masker: DynamicMasker | None = None,
     ) -> None:
         """Wire the pipeline together.
 
@@ -72,6 +78,7 @@ class SparseStereoOdometry:
             frontend: Sparse stereo front end.
             config: Back-end settings (PnP/LM thresholds, stereo noise, windowed BA); defaults when omitted.
             depth_estimator: Monocular depth network for BA priors (used only with ``depth_prior``).
+            masker: Segmentation of movable objects (used only with ``dynamic_mask``).
 
         Raises:
             ValueError: If the anchoring mode is unknown or depth priors are requested without an estimator.
@@ -86,6 +93,7 @@ class SparseStereoOdometry:
         if self._config.depth_prior and depth_estimator is None:  # Priors need a network.
             raise ValueError("depth_prior requires a depth estimator (e.g. --depth depth_anything_v2)")  # Clear error.
         self._depth_estimator = depth_estimator if self._config.depth_prior else None  # Only used for priors.
+        self._masker = masker if self._config.dynamic_mask else None  # Movable-object masking.
         self.reset()  # Initialise state.
 
     @property
@@ -131,6 +139,7 @@ class SparseStereoOdometry:
         self._next_id = 0  # Next unused id.
         self._frames_since_window_keyframe = 0  # Window keyframe spacing.
         self._window = self._new_window()  # Windowed BA state (None when disabled).
+        self._dynamic_mask: BoolArray | None = None  # Movable-object mask of the current frame.
 
     def _new_window(self) -> KeyframeWindow | None:
         """Create an empty keyframe window, or None when windowed BA is disabled.
@@ -190,7 +199,7 @@ class SparseStereoOdometry:
         if len(tracks) >= self._frontend.min_tracks:  # Enough tracks.
             return tracks, False, 0.0  # Nothing to do.
         start = time.perf_counter()  # Time stereo detection + matching.
-        new = self._frontend.detect(frame.left, frame.right, tracks)  # New pairs away from existing ones.
+        new = self._frontend.detect(frame.left, frame.right, tracks, self._dynamic_mask)  # New pairs away from existing ones and moving objects.
         self._num_keyframes += 1  # Count replenishment frames.
         return tracks.concatenate(new), True, _elapsed_ms(start)  # Combined tracks.
 
@@ -236,7 +245,9 @@ class SparseStereoOdometry:
         self._anchors = new_points if anchors is None else np.vstack([anchors[0], new_points])  # Points.
         self._anchor_covariances = new_cov if anchors is None else np.concatenate([anchors[1], new_cov])  # Covariances.
 
-    def _fuse(self, anchors: tuple[FloatArray, FloatArray], tracks: StereoTracks, world_from_camera: FloatArray) -> tuple[FloatArray, FloatArray]:
+    def _fuse(
+        self, anchors: tuple[FloatArray, FloatArray], tracks: StereoTracks, world_from_camera: FloatArray
+    ) -> tuple[FloatArray, FloatArray, BoolArray]:
         """Fuse a new stereo triangulation of each track into its anchor (information-form update).
 
         X = (S1^-1 + S2^-1)^-1 (S1^-1 X1 + S2^-1 X2): far, uncertain anchors sharpen as tracks
@@ -248,13 +259,18 @@ class SparseStereoOdometry:
             world_from_camera: Current T_world_cam.
 
         Returns:
-            Fused anchor points and covariances.
+            Fused anchor points and covariances, and an (N,) mask of tracks whose new observation is consistent
+            with their landmark (squared Mahalanobis distance below ``dynamic_gate_chi2``).
         """
         points, covariances = anchors  # Prior anchors.
         new_points, new_cov = self._to_world(tracks, world_from_camera)  # Fresh observation.
         ok = np.isfinite(new_points).all(axis=1) & np.isfinite(points).all(axis=1)  # Both valid.
+        consistent = np.ones(len(points), dtype=bool)  # Untestable tracks count as consistent.
         if not ok.any():  # Nothing to fuse.
-            return points, covariances  # Unchanged.
+            return points, covariances, consistent  # Unchanged.
+        diff = new_points[ok] - points[ok]  # Landmark vs. new triangulation.
+        d2 = np.einsum("ni,nij,nj->n", diff, np.linalg.inv(covariances[ok] + new_cov[ok]), diff)  # Squared Mahalanobis distance.
+        consistent[ok] = d2 < self._config.dynamic_gate_chi2  # Static, unoccluded points agree.
         info_old, info_new = np.linalg.inv(covariances[ok]), np.linalg.inv(new_cov[ok])  # Information matrices.
         fused_cov = np.linalg.inv(info_old + info_new)  # Combined covariance.
         fused = np.einsum(
@@ -262,7 +278,7 @@ class SparseStereoOdometry:
         )  # Weighted mean.
         points, covariances = points.copy(), covariances.copy()  # Do not modify the caller's arrays.
         points[ok], covariances[ok] = fused, fused_cov  # Update.
-        return points, covariances  # Fused anchors.
+        return points, covariances, consistent  # Fused anchors and the consistency test.
 
     def _project(self, camera_from_reference: FloatArray, points: FloatArray) -> tuple[Float32Array, np.ndarray]:
         """Project reference-frame points into the current left image.
@@ -291,6 +307,8 @@ class SparseStereoOdometry:
         """
         if self._previous is None:  # First frame: detect, define the world origin.
             start = time.perf_counter()  # Time the step.
+            if self._masker is not None:  # Movable objects in the first frame.
+                self._dynamic_mask = self._masker.mask(frame.left)
             tracks, _, depth_ms = self._replenish(frame, StereoTracks.empty())  # Initial stereo pairs.
             self._previous = (frame.left, frame.right)  # Remember images.
             pose = np.eye(4, dtype=np.float64)  # World = first camera.
@@ -329,6 +347,14 @@ class SparseStereoOdometry:
         match_start = time.perf_counter()  # Front-end timer.
         current, keep = self._frontend.track(self._previous, (frame.left, frame.right), tracks, predicted_left)  # Circular KLT.
         self._frontend.synchronize()  # Honest timing for GPU front ends.
+        dynamic_rejected = 0  # Tracks dropped on movable objects or by the dynamic/occlusion gate.
+        if self._masker is not None:  # Stop tracking points on people and vehicles.
+            self._dynamic_mask = self._masker.mask(frame.left)  # Current frame.
+            on_dynamic = pixels_in_mask(self._dynamic_mask, current.left)  # Tracks now on a movable object.
+            keep = keep.copy()  # Do not modify the front end's array.
+            keep[np.flatnonzero(keep)[on_dynamic]] = False  # Drop them...
+            current = current.subset(~on_dynamic)  # ...from both views of the track list.
+            dynamic_rejected += int(on_dynamic.sum())  # Count them.
         match_ms = _elapsed_ms(match_start)  # Front-end time.
 
         pose_start = time.perf_counter()  # Pose timer.
@@ -354,7 +380,13 @@ class SparseStereoOdometry:
             survivor_anchors: tuple[FloatArray, FloatArray] = (points_3d[inliers], covariances[inliers])  # Their anchors travel with them.
             survivor_ids = track_ids[keep][usable][inliers]  # And their ids.
             if self._config.sparse_point_anchor == "fused":  # Fuse this frame's stereo triangulation into each anchor.
-                survivor_anchors = self._fuse(survivor_anchors, survivors, pose)  # Inverse-covariance update.
+                fused_points, fused_cov, consistent = self._fuse(survivor_anchors, survivors, pose)  # Inverse-covariance update.
+                survivor_anchors = (fused_points, fused_cov)  # Fused anchors.
+                if self._config.dynamic_gate:  # Moving points and occlusion jumps fail the consistency test.
+                    survivors = survivors.subset(consistent)  # Stop tracking them.
+                    survivor_anchors = (fused_points[consistent], fused_cov[consistent])  # Keep anchors aligned.
+                    survivor_ids = survivor_ids[consistent]  # And ids.
+                    dynamic_rejected += int((~consistent).sum())  # Count them.
         else:  # Tracking failure.
             pose = predicted_pose  # Coast.
             self._num_failures += 1  # Count it.
@@ -365,7 +397,7 @@ class SparseStereoOdometry:
         previous_pose = self._last_pose  # T_world_prev, for the motion model.
         new_tracks, replenished, depth_ms = self._replenish(frame, survivors)  # Top up features.
         if not estimate.success and not replenished:  # Always re-detect after a failure.
-            new_tracks = self._frontend.detect(frame.left, frame.right, StereoTracks.empty())  # Fresh start.
+            new_tracks = self._frontend.detect(frame.left, frame.right, StereoTracks.empty(), self._dynamic_mask)  # Fresh start.
         self._set_tracks(new_tracks, pose, survivor_anchors, survivor_ids)  # Keep survivors' anchors and ids, anchor new tracks here.
         window_stats, ba_ms = WindowStats(), 0.0  # No BA by default.
         self._frames_since_window_keyframe += 1  # Keyframe spacing.
@@ -409,5 +441,6 @@ class SparseStereoOdometry:
             ba_landmarks=window_stats.landmarks,
             prior_factors=window_stats.prior_factors,
             prior_scale=window_stats.prior_scale,
+            dynamic_rejected=dynamic_rejected,
         )
         return TrackingResult(pose, stats)  # Report.
