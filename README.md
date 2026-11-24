@@ -46,6 +46,30 @@ Features are tracked frame to frame with KLT around the circle left(t-1) -> left
 A track survives only if the circle closes within 1 px, which rejects repetitive texture and moving objects (red):
 
 ![KLT tracks kept and rejected by the circular left/right check](assets/readme/klt_tracks.jpg)
+
+## Hardware: the wheelchair rig
+
+Two Intel RealSense colour cameras (1280×720) are mounted rigidly on a powered wheelchair, about 0.42 m apart,
+which is a stereo baseline comparable to KITTI's 0.54 m. The rig is recorded with ROS 2.
+
+<p align="center"><img src="assets/readme/wheelchair.jpg" width="340" alt="The wheelchair platform with the camera mast and calibration boards on the lab partitions"><br>
+<em>The wheelchair platform: an aluminium mast with 3D-printed mounts, with ChArUco calibration boards on the lab partitions behind.</em></p>
+
+**Stereo calibration.** The extrinsic is calibrated with [MC-Calib](https://github.com/rameau-fr/MC-Calib)
+from a ChArUco board (5×5, 3.2 cm squares) seen by both cameras, with the RealSense factory intrinsics held fixed.
+Over 245 synchronised frames and 7,558 detected corners, the reprojection error is **0.27 px mean**
+(0.32 px RMS, 0.23 px median), under the proposal's 0.5 px target. The calibrated extrinsic is then frozen:
+it is the fixed baseline the rigid-rig LM and the windowed BA rely on.
+
+![Synchronised calibration frames with detected ChArUco corners](assets/readme/calibration_pair.jpg)
+
+**First 3D data from our own recording.** Both cameras' depth, fused into one frame with the calibrated
+extrinsic: 687,980 points from a ROS 2 bag. The wall panel, the ChArUco board and the hole in the panel are all
+recovered in 3D, and the two cameras' clouds line up.
+
+<p align="center"><img src="assets/readme/pointcloud.png" width="520" alt="Fused point cloud from the wheelchair rig (front view)"></p>
+
+Next: record full wheelchair sequences, run the stereo VO on them, and compare against wheel odometry.
  
 ## Project layout
  
@@ -258,8 +282,8 @@ and inconsistent priors are rejected (red):
 
 ![Depth-prior gating per landmark](assets/readme/gating_kitti.jpg)
 
-On a 0.54 m baseline the priors don't yet beat BA alone (7.5 vs 6.3 m ATE). They are aimed at weak-stereo
-setups such as the D455's 5 cm baseline.
+On a 0.54 m baseline the priors don't yet beat BA alone (7.5 vs 6.3 m ATE). They should matter more where
+stereo is weak: low texture, distant scenes, or a short baseline.
 
 ## Design decisions
  
