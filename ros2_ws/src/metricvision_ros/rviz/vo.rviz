@@ -1,0 +1,186 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+  - Class: rviz_common/Views
+    Name: Views
+Visualization Manager:
+  Class: ""
+  Global Options:
+    Background Color: 30; 30; 32
+    Fixed Frame: vo_odom
+    Frame Rate: 30
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid (1 m)
+      Enabled: true
+      Cell Size: 1
+      Plane Cell Count: 40
+      Color: 80; 80; 85
+      Reference Frame: <Fixed Frame>
+    - Class: rviz_default_plugins/PointCloud2
+      Name: VO landmarks (3D map points, colour = height)
+      Enabled: true
+      Topic:
+        Value: /vo/landmarks
+        Reliability Policy: Reliable
+        Durability Policy: Volatile
+        Depth: 2
+      Style: Points
+      Size (Pixels): 3
+      Color Transformer: AxisColor
+      Axis: Z
+      Use Fixed Frame: true
+      Decay Time: 0
+    - Class: rviz_default_plugins/Path
+      Name: Stereo VO classical path (blue)
+      Enabled: true
+      Topic:
+        Value: /vo/path
+        Reliability Policy: Reliable
+        Durability Policy: Volatile
+        Depth: 5
+      Color: 40; 160; 255
+      Line Style: Billboards
+      Line Width: 0.05
+    - Class: rviz_default_plugins/Path
+      Name: Stereo VO learned path (purple)
+      Enabled: true
+      Topic:
+        Value: /vo_learned/path
+        Reliability Policy: Reliable
+        Durability Policy: Volatile
+        Depth: 5
+      Color: 160; 90; 220
+      Line Style: Billboards
+      Line Width: 0.05
+    - Class: rviz_default_plugins/Odometry
+      Name: Stereo VO learned pose (purple arrow)
+      Enabled: true
+      Topic:
+        Value: /vo_learned/odom
+        Reliability Policy: Reliable
+        Durability Policy: Volatile
+        Depth: 5
+      Keep: 1
+      Shape:
+        Value: Arrow
+        Color: 160; 90; 220
+        Shaft Length: 0.6
+        Shaft Radius: 0.04
+        Head Length: 0.2
+        Head Radius: 0.08
+      Covariance:
+        Value: false
+    - Class: rviz_default_plugins/Path
+      Name: Wheel odometry /odom path (green)
+      Enabled: true
+      Topic:
+        Value: /vo/wheel_path
+        Reliability Policy: Reliable
+        Durability Policy: Volatile
+        Depth: 5
+      Color: 60; 220; 120
+      Line Style: Billboards
+      Line Width: 0.04
+    - Class: rviz_default_plugins/Path
+      Name: Lidar odometry /Odometry path (orange)
+      Enabled: true
+      Topic:
+        Value: /vo/lidar_path
+        Reliability Policy: Reliable
+        Durability Policy: Volatile
+        Depth: 5
+      Color: 240; 140; 20
+      Line Style: Billboards
+      Line Width: 0.04
+    - Class: rviz_default_plugins/Odometry
+      Name: Stereo VO classical pose (blue arrow)
+      Enabled: true
+      Topic:
+        Value: /vo/odom
+        Reliability Policy: Reliable
+        Durability Policy: Volatile
+        Depth: 5
+      Keep: 1
+      Shape:
+        Value: Arrow
+        Color: 40; 160; 255
+        Shaft Length: 0.6
+        Shaft Radius: 0.05
+        Head Length: 0.2
+        Head Radius: 0.1
+      Covariance:
+        Value: false
+    - Class: rviz_default_plugins/Odometry
+      Name: Reference pose (lidar, else wheels; arrow)
+      Enabled: true
+      Topic:
+        Value: /vo/reference_odom
+        Reliability Policy: Reliable
+        Durability Policy: Volatile
+        Depth: 5
+      Keep: 1
+      Shape:
+        Value: Arrow
+        Color: 60; 220; 120
+        Shaft Length: 0.6
+        Shaft Radius: 0.04
+        Head Length: 0.2
+        Head Radius: 0.08
+      Covariance:
+        Value: false
+    - Class: rviz_default_plugins/TF
+      Name: TF (vo_odom, VO base)
+      Enabled: true
+      Show Names: true
+      Show Axes: true
+      Show Arrows: false
+      Marker Scale: 0.5
+      Frames:
+        All Enabled: true
+    - Class: rviz_default_plugins/Image
+      Name: VO debug (keypoints / matches / inliers)
+      Enabled: true
+      Topic:
+        Value: /vo/debug_image
+        Reliability Policy: Reliable
+        Durability Policy: Volatile
+        Depth: 2
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Interact
+    - Class: rviz_default_plugins/Measure
+  Views:
+    # 3D: left-drag orbit, middle-drag (or shift+left) pan, scroll zoom. Follows the VO base frame.
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Name: 3D follow
+      Target Frame: vo_base_footprint
+      Distance: 7
+      Pitch: 0.55
+      Yaw: 3.6
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0.5
+      Near Clip Distance: 0.01
+    # Switch in the Views panel (Type / Saved): top-down map of both paths.
+    Saved:
+      - Class: rviz_default_plugins/TopDownOrtho
+        Name: Top-down
+        Scale: 60
+        X: 0
+        Y: 0
+      - Class: rviz_default_plugins/Orbit
+        Name: 3D fixed (world)
+        Target Frame: vo_odom
+        Distance: 12
+        Pitch: 0.8
+        Yaw: 3.6
+        Focal Point:
+          X: 0
+          Y: 0
+          Z: 0
+Window Geometry:
+  Width: 1600
+  Height: 1000

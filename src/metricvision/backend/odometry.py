@@ -8,14 +8,16 @@ from typing import Any  # Loosely typed config dictionaries.
 import numpy as np  # Array maths.
 
 from metricvision.backend.keyframe import KeyframeConfig, KeyframePolicy  # Keyframe selection.
-from metricvision.backend.pose import PnPConfig, PnPPoseEstimator  # Robust pose estimation.
+from metricvision.backend.pose import PnPConfig, PnPPoseEstimator, PoseEstimate  # Robust pose estimation.
 from metricvision.backend.stats import FrameStats  # Per-frame measurements.
-from metricvision.core.geometry import invert_pose  # Rigid inverse.
+from metricvision.core.geometry import invert_pose, orthonormalize_pose  # Rigid inverse, SO(3) projection.
 from metricvision.core.stereo import triangulation_covariance  # Depth uncertainty for the LM weighting.
 from metricvision.core.types import (  # Shared types.
     BoolArray,
+    Correspondences,
     Float32Array,
     FloatArray,
+    FrameDebug,
     ImageView,
     StereoCamera,
     StereoFrame,
@@ -107,10 +109,12 @@ class TrackingResult:
     Attributes:
         world_from_camera: Estimated pose T_world_cam of the left camera.
         stats: Measurements recorded for this frame.
+        debug: Correspondences and inliers behind the pose, for visualisation (None on the first frame).
     """
 
     world_from_camera: FloatArray  # Pose estimate.
     stats: FrameStats  # Measurements.
+    debug: FrameDebug | None = None  # Visualisation only.
 
 
 def _elapsed_ms(start: float) -> float:
@@ -313,7 +317,7 @@ class StereoVisualOdometry:
         if estimate.success:  # PnP found a well-supported pose.
             pose = keyframe.world_from_camera @ invert_pose(estimate.camera_from_reference)  # T_world_cur = T_world_kf @ T_kf_cur.
         else:  # Tracking failure.
-            pose = predicted_pose  # Coast on the motion model.
+            pose = orthonormalize_pose(predicted_pose)  # Coast on the motion model. Re-orthonormalised so long coasts stay on SO(3).
             self._num_failures += 1  # Count the failure.
         self._velocity = invert_pose(self._last_pose) @ pose  # Update the motion model (unchanged on failure).
         self._last_pose = pose  # Remember for the next prediction.
@@ -348,4 +352,30 @@ class StereoVisualOdometry:
             depth_ms=depth_ms,
             total_ms=total_ms,  # Timings.
         )
-        return TrackingResult(pose, stats)  # Report.
+        return TrackingResult(pose, stats, self._debug(keyframe, matches, points_3d, valid, estimate, pose))  # Report.
+
+    @staticmethod
+    def _debug(
+        keyframe: Keyframe, matches: Correspondences, points_3d: FloatArray, valid: BoolArray, estimate: PoseEstimate, pose: FloatArray
+    ) -> FrameDebug:
+        """Package the keyframe -> current correspondences for visualisation.
+
+        Args:
+            keyframe: Keyframe the frame was tracked against.
+            matches: Keyframe -> current matches.
+            points_3d: (M, 3) keyframe-frame points of the matches with depth.
+            valid: (N,) which matches have depth.
+            estimate: PnP result over the valid matches.
+            pose: Final T_world_cur.
+
+        Returns:
+            Debug record.
+        """
+        camera_from_keyframe = invert_pose(pose) @ keyframe.world_from_camera  # T_cur_kf.
+        points = np.full((len(matches), 3), np.nan)  # Current-camera points.
+        points[valid] = points_3d @ camera_from_keyframe[:3, :3].T + camera_from_keyframe[:3, 3]  # Move them.
+        inliers = np.zeros(len(matches), dtype=bool)  # Over all matches.
+        if estimate.success:  # Inliers only mean something for a found pose.
+            mask = estimate.refined_inlier_mask if estimate.refined_inlier_mask is not None else estimate.inlier_mask  # Best set.
+            inliers[np.flatnonzero(valid)[mask]] = True  # Map back.
+        return FrameDebug(keyframe.frame_index, matches.points_a, matches.points_b, None, points, inliers)  # Record.

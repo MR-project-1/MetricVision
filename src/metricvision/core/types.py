@@ -242,3 +242,31 @@ class Trajectory:
         for timestamp, pose in zip(self.timestamps, self.poses, strict=True):  # Walk the poses in order.
             converted.append(timestamp, new_from_old @ pose @ old_from_new)  # Apply the conjugation.
         return converted  # Poses of the new frame.
+
+
+@dataclass(frozen=True)
+class FrameDebug:
+    """What the tracker used in one frame, for visualisation only (pixels in the rectified images).
+
+    Row ``i`` of the correspondence arrays is one 2D-3D correspondence offered to PnP (or a tracked
+    point without depth, ``points_camera`` NaN).
+
+    Attributes:
+        reference_index: Frame index of the reference image (the previous frame, or the keyframe).
+        reference_left: (N, 2) the point in the reference left image.
+        current_left: (N, 2) the point in the current left image.
+        current_right: (N, 2) its stereo partner in the current right image, or None (dense pipeline).
+        points_camera: (N, 3) the 3D point expressed in the current camera frame (NaN where no depth).
+        inliers: (N,) PnP / LM inliers (all False on a tracking failure).
+        new_left: (M, 2) features detected in this frame (sparse replenishment).
+        new_right: (M, 2) their right-image partners.
+    """
+
+    reference_index: int  # What the motion is measured against.
+    reference_left: Float32Array  # (N, 2).
+    current_left: Float32Array  # (N, 2).
+    current_right: Float32Array | None  # (N, 2) or None.
+    points_camera: FloatArray  # (N, 3), NaN rows allowed.
+    inliers: BoolArray  # (N,).
+    new_left: Float32Array = field(default_factory=lambda: np.zeros((0, 2), dtype=np.float32))  # (M, 2).
+    new_right: Float32Array = field(default_factory=lambda: np.zeros((0, 2), dtype=np.float32))  # (M, 2).

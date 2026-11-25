@@ -1,0 +1,69 @@
+# Wheelchair rig (two RealSense colour cameras, 640x480 @ 15 Hz, ~0.42 m baseline, no HW sync), ROS 2 bags.
+# Run: uv run metricvision run configs/wheelchair.yaml --dataset-root ros_bags/run_01 --pipeline sparse
+output_dir: results  # Results go to results/<dataset tag>/<matcher>/.
+max_frames: null  # null = process every frame.
+pipeline: dense  # "dense": matcher + SGBM keyframe VO; "sparse": stereo_frontend + frame-to-frame VO (override with --pipeline).
+
+dataset:
+  name: rosbag_stereo  # Pairs + rectifies the two cameras; /odom (wheel odometry) is the reference.
+  params:
+    root: ros_bags/run_01  # Bag folder (metadata.yaml + .db3).
+    calibration: configs/wheelchair/rig_640x480.yaml  # Recorded bags (offline). The live node uses rig_640x480_live.yaml (vo_params.yaml).
+    left_topic: /cam1/cam1/color/image_raw  # cam1 is the LEFT camera in the optical frame.
+    right_topic: /cam2/cam2/color/image_raw
+    odom_topic: /odom  # Wheel odometry, interpolated at image times.
+    max_pair_dt_s: 0.035  # Cameras are not synchronised (median offset ~23 ms); drop worse pairs.
+    alpha: 0.0  # Rectification: valid pixels only.
+    clahe: true  # Equalise local contrast: the two RealSense units expose independently (+60-230% stereo matches).
+
+matcher:
+  name: orb  # Front end under test; override with --matcher sift.
+  params:
+    max_keypoints: 2000  # Keypoint budget, kept equal across extractors.
+    ratio: 0.8  # Lowe ratio-test threshold.
+    mutual_check: true  # Keep only mutual nearest neighbours.
+
+stereo_frontend:  # Used when pipeline is sparse: FAST + ORB stereo matching, KLT with circular L/R check.
+  name: fast_orb_klt
+  params:
+    max_features: 1500  # Target number of tracked stereo pairs.
+    fast_threshold: 10  # FAST corner threshold (low-texture indoor scenes).
+    circular_tolerance_px: 1.0  # Closing error allowed in the circular check.
+    epipolar_tolerance_px: 2.0  # Row difference allowed between left and right (unsynchronised rig).
+    max_disparity: 256.0  # fx*B is about 222 px*m: depths down to ~0.9 m.
+
+prior_depth:  # Monocular metric depth network: windowed-BA priors (--depth-prior) and mono VO (--pipeline dense --depth depth_anything_v2).
+  name: depth_anything_v2  # Depth Anything V2 metric head; needs `uv sync --extra learned`.
+  params:
+    variant: indoor  # indoor (Hypersim, <= 20 m) or outdoor (Virtual KITTI 2, <= 80 m).
+    size: small  # ~25M parameters, fp16: well under 1 GB of VRAM.
+    input_size: 392  # Short side of the network input (multiple of 14).
+    max_depth: 20.0  # Ignore predictions beyond this.
+
+depth:
+  name: sgbm  # Fixed stereo depth source.
+  params:
+    num_disparities: 192  # fx*B is about 222 px*m, so this covers depths down to ~1.2 m.
+    block_size: 5  # Matching window.
+    min_depth: 1.2  # Matches the disparity range above.
+    max_depth: 20.0  # Indoor corridors and labs.
+
+odometry:
+  essential_threshold_px: 1.0  # Inlier threshold for the front-end quality metric.
+  stereo_sigma_px: 0.5  # Pixel/disparity noise for triangulation covariance (weights the LM).
+  sparse_point_anchor: fused  # Sparse only: previous (frame-to-frame) | birth (keep first 3D) | fused (inverse-covariance fusion).
+  window_size: 0  # Sparse only: sliding-window BA keyframes (e.g. 5 with --window 5); 0 disables.
+  window_keyframe_interval: 3  # A BA keyframe every this many frames.
+  depth_prior: false  # Sparse only: gated monocular depth priors in the BA (--depth-prior).
+  depth_prior_rel_sigma: 0.1  # Prior std as a fraction of depth.
+  depth_prior_scale_align: true  # Rescale network depth to the stereo scale per keyframe.
+  pnp:
+    reprojection_error_px: 2.0  # PnP RANSAC inlier threshold.
+    iterations: 200  # PnP RANSAC iterations.
+    min_inliers: 15  # Below this, the frame counts as a tracking failure.
+    refine: lm  # none | opencv (cv2.solvePnPRefineLM) | lm (covariance-weighted rigid-rig LM, analytic Jacobians).
+  keyframe:
+    min_inliers: 100  # New keyframe when inliers drop below this.
+    max_translation_m: 0.5  # ...or after this much motion (indoor scale).
+    max_rotation_deg: 10.0  # ...or this much rotation.
+    max_frames: 15  # ...or this many frames (1 s at 15 Hz).

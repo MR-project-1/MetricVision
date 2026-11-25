@@ -1,0 +1,32 @@
+# Wheelchair stereo rig, RealSense colour 640x480 (camera_info factory intrinsics).
+# left = /cam1 (images prove cam1 is LEFT in the optical frame), right = /cam2.
+# right_from_left: rotation + baseline direction re-estimated from still frames of small_run_01, small_run_02, run_01
+#   (Sampson RMS 0.35 px); |baseline| = 0.4187 m from MC-Calib.
+# body_from_left: base_footprint <- base_link <- camera2_mount_link (tf_static) <- RealSense optical convention.
+# Written by scripts/calibrate_rig_from_bags.py
+# body_from_left rotation re-estimated by scripts/estimate_camera_to_base.py from 'sparse_ba5' runs vs /odom
+#   (turn-axis residual 0.43 deg, forward residual 1.08 deg; yaw correction -5.50 deg); lever arm from tf_static.
+width: 640
+height: 480
+k_left:
+- [385.5380554199219, 0.0, 324.7415771484375]
+- [0.0, 384.5068664550781, 241.58200073242188]
+- [0.0, 0.0, 1.0]
+d_left: [-0.05550634488463402, 0.07052703201770782, -0.0010663368739187717, -0.0004631154879461974,
+  -0.0231263916939497]
+k_right:
+- [387.2043151855469, 0.0, 321.1673583984375]
+- [0.0, 386.7719421386719, 246.2705078125]
+- [0.0, 0.0, 1.0]
+d_right: [-0.05566002056002617, 0.06759800016880035, -0.0005363934324122965, 4.0313439967576414e-05,
+  -0.02225547656416893]
+right_from_left:
+- [0.9802520036481774, 0.1374593793064872, 0.1421651447592157, -0.41506358777297436]
+- [-0.12342940097323227, 0.9869690860410273, -0.10323374532936602, 0.04681987975486224]
+- [-0.15450304954635208, 0.08364772704631387, 0.9844449529764795, 0.02945667111965329]
+- [0.0, 0.0, 0.0, 1.0]
+body_from_left:
+- [-0.09497946580964987, 0.12210544763152324, 0.9879621251511714, 0.49]
+- [-0.9954540406435036, -0.004589490494029437, -0.09513248416564758, 0.27]
+- [-0.007081951781502758, -0.9925065220116746, 0.12198626858484478, 0.489]
+- [0.0, 0.0, 0.0, 1.0]

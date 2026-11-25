@@ -18,6 +18,7 @@ metricvision = "metricvision.cli:main"  # Installs a `metricvision` command that
 
 [project.optional-dependencies]
 learned = [
+    "kornia>=0.7.3",
     "torch>=2.4",
     "transformers>=4.46",
 ]
@@ -57,6 +58,9 @@ warn_unused_ignores = true  # Keep `# type: ignore` comments honest.
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]  # Where pytest looks for tests.
+# A sourced ROS 2 (dev container shells) exposes its pytest plugins through PYTHONPATH; they need extra
+# packages and are irrelevant here, so keep them out.
+addopts = "-p no:launch_testing -p no:launch_pytest -p no:launch_ros -p no:ament_lint -p no:ament_copyright -p no:ament_xmllint -p no:ament_pep257 -p no:ament_flake8"
 
 [[tool.mypy.overrides]]
 module = ["torch", "torch.*", "transformers", "transformers.*"]  # Optional `learned` extra: huge typed packages.

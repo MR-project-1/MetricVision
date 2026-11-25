@@ -30,13 +30,14 @@ from metricvision.backend.odometry import OdometryConfig, TrackingResult  # Shar
 from metricvision.backend.pose import PnPPoseEstimator  # PnP + RANSAC (+ LM).
 from metricvision.backend.stats import FrameStats  # Per-frame measurements.
 from metricvision.backend.window_ba import WindowBAConfig  # BA settings.
-from metricvision.core.geometry import invert_pose  # Rigid inverse.
+from metricvision.core.geometry import invert_pose, orthonormalize_pose  # Rigid inverse, SO(3) projection.
 from metricvision.core.stereo import triangulate_rectified, triangulation_covariance  # Sparse triangulation.
 from metricvision.core.types import (  # Shared types.
     BoolArray,
     Correspondences,
     Float32Array,
     FloatArray,
+    FrameDebug,
     ImageArray,
     StereoCamera,
     StereoFrame,
@@ -356,7 +357,7 @@ class SparseStereoOdometry:
             if self._config.sparse_point_anchor == "fused":  # Fuse this frame's stereo triangulation into each anchor.
                 survivor_anchors = self._fuse(survivor_anchors, survivors, pose)  # Inverse-covariance update.
         else:  # Tracking failure.
-            pose = predicted_pose  # Coast.
+            pose = orthonormalize_pose(predicted_pose)  # Coast. Re-orthonormalised so long coasts stay on SO(3).
             self._num_failures += 1  # Count it.
             survivors = StereoTracks.empty()  # Re-detect everything.
             survivor_anchors = (np.zeros((0, 3)), np.zeros((0, 3, 3)))  # No anchors survive.
@@ -410,4 +411,19 @@ class SparseStereoOdometry:
             prior_factors=window_stats.prior_factors,
             prior_scale=window_stats.prior_scale,
         )
-        return TrackingResult(pose, stats)  # Report.
+        inliers_all = np.zeros(len(current), dtype=bool)  # Over the circular-check survivors.
+        if estimate.success:  # Only a found pose has inliers.
+            inliers_all[np.flatnonzero(usable)[inliers]] = True  # Map back.
+        camera_from_world = invert_pose(pose)  # T_cur_world.
+        added = new_tracks.subset(np.arange(len(new_tracks)) >= len(survivors))  # This frame's detections.
+        debug = FrameDebug(
+            frame.index - 1,  # Previous frame.
+            tracks.left[keep],
+            current.left,
+            current.right,
+            points_world[keep] @ camera_from_world[:3, :3].T + camera_from_world[:3, 3],  # Anchors seen from here (NaN kept).
+            inliers_all,
+            added.left,
+            added.right,
+        )
+        return TrackingResult(pose, stats, debug)  # Report.

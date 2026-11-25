@@ -1,0 +1,38 @@
+# Parameters of the MetricVision stereo VO node (metricvision.ros.vo_node).
+# Relative paths are relative to the repository root. Launch arguments (pipeline, window, output_dir, topics)
+# override the matching entries here; copy this file and pass params_file:=... for a different robot.
+metricvision_vo:
+  ros__parameters:
+    config: configs/wheelchair.yaml          # Pipeline + rectification settings (same file as the offline runs).
+    calibration: configs/wheelchair/rig_640x480_live.yaml  # Rig as mounted now (bags: rig_640x480.yaml); stereo rotation self-calibrated on start.
+    pipeline: sparse                         # sparse | dense
+    window: -1                               # Sparse windowed BA size; -1 = from config, 0 = off, 5 = on.
+    approaches: classical,learned            # Run on the same frames; the first drives /vo/*, others /vo_<name>/*.
+
+    # Inputs. cam1 is the LEFT camera on the wheelchair (the TF labels are swapped).
+    left_topic: /cam1/cam1/color/image_raw
+    right_topic: /cam2/cam2/color/image_raw
+    max_pair_dt_s: 0.035                     # Stereo pairing tolerance (cameras are not hardware-synced).
+    reliable_qos: true                       # false if the camera driver publishes best-effort.
+    reference_topic: /odom                   # Wheel odometry (odom.tum); "" to disable.
+    lidar_topic: /Odometry                   # DLIO lidar-inertial odometry (lidar.tum): the main reference and the
+                                             # rviz2 overlay when it publishes; "" to disable.
+
+    # Outputs.
+    odom_frame: vo_odom
+    base_frame: base_footprint
+    publish_tf: true                         # vo_odom -> vo_base_footprint (does not touch odom -> base_footprint).
+    output_dir: ""                           # Run folder written on shutdown ("" = off; the launch file sets results/live/<time>).
+
+    # Visualisation (/vo/debug_image is only rendered while someone subscribes).
+    debug_rate_hz: 10.0
+    debug_scale: 0.75
+    landmark_voxel_m: 0.05
+
+    # rviz2 load: it re-renders every Path / PointCloud2 message in full, so these stay bounded on long drives.
+    path_min_step_m: 0.02                    # Add a path pose only after 2 cm ...
+    path_min_turn_deg: 2.0                   # ... or 2 deg of turning.
+    path_max_poses: 4000                     # Then thin the older half (whole run stays visible).
+    path_rate_hz: 2.0                        # /vo/path and /vo/reference_path publish rate.
+    landmark_max_points: 60000               # Oldest-seen voxels are dropped beyond this.
+    landmark_rate_hz: 1.0                    # /vo/landmarks publish rate.

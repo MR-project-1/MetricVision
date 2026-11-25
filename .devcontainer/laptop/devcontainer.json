@@ -8,15 +8,36 @@
   },
   "runArgs": [
     "--gpus=all",  // Expose the NVIDIA GPU (needs the NVIDIA Container Toolkit on the host).
-    "--ipc=host",  // Larger shared memory, needed by PyTorch data loaders later.
-    "--network=host"  // Share the host network; later lets ROS 2 nodes talk to the robot.
+    "--shm-size=8g",  // Own, larger /dev/shm (PyTorch). Not --ipc=host: sharing /dev/shm with other ROS containers
+                      // crashed rviz2 through Fast DDS robust mutexes across PID namespaces.
+    "--network=host",  // Share the host network so ROS 2 nodes talk to the wheelchair (DDS discovery).
+    "--privileged",  // USB access for RealSense cameras plugged into this laptop.
+    "-v", "/dev:/dev"  // Same, including devices plugged in after start.
   ],
-  "initializeCommand": "mkdir -p ${localEnv:HOME}/datasets",  // Runs on the host so the bind mount below always exists.
+  "containerEnv": {
+    "DISPLAY": "${localEnv:DISPLAY}",  // rviz2 / rqt windows on the host screen (run `xhost +local:` on the host once).
+    // The CUDA base image only asks for compute,utility: without "graphics" the NVIDIA OpenGL driver is not mounted
+    // and rviz2 renders in software (Mesa llvmpipe) on the CPU, which froze it ("not responding") next to the
+    // wheelchair stack. "all" adds graphics + display.
+    "NVIDIA_DRIVER_CAPABILITIES": "all",
+    "QT_X11_NO_MITSHM": "1",  // Qt over X11 from a container: no MIT-SHM (avoids BadAccess crashes of rviz2).
+    "XDG_RUNTIME_DIR": "/tmp/runtime-root",  // Qt wants one; silences the rviz2 warning.
+    "ROS_DOMAIN_ID": "${localEnv:ROS_DOMAIN_ID:7}",  // Same DDS domain as the host / wheelchair.
+    "METRICVISION_ROOT": "${containerWorkspaceFolder}",  // Where vo_node finds the repository (any checkout folder name).
+    // ROS 2 data over UDP instead of shared memory, which does not work between host and container (see the file).
+    "FASTRTPS_DEFAULT_PROFILES_FILE": "${containerWorkspaceFolder}/.devcontainer/laptop/fastdds_udp.xml"
+  },
+  // Runs on the host: make sure the dataset mount exists and let the container open windows (rviz2) on the host X server.
+  "initializeCommand": "mkdir -p ${localEnv:HOME}/datasets && (xhost +local: >/dev/null 2>&1 || true)",
   "mounts": [
     "source=${localEnv:HOME}/datasets,target=/data,type=bind",  // Host ~/datasets appears as /data inside the container.
-    "source=metricvision-uv-cache,target=/root/.cache/uv,type=volume"  // Persist uv's download cache across rebuilds.
+    "source=metricvision-uv-cache,target=/root/.cache/uv,type=volume",  // Persist uv's download cache across rebuilds.
+    "source=metricvision-hf-cache,target=/root/.cache/huggingface,type=volume",  // SuperPoint weights (learned approach).
+    "source=metricvision-torch-cache,target=/root/.cache/torch,type=volume",  // LightGlue weights (learned approach).
+    "source=/tmp/.X11-unix,target=/tmp/.X11-unix,type=bind"  // X11 socket for rviz2.
   ],
-  "postCreateCommand": "uv sync --all-groups",  // Create /opt/venv from uv.lock, including dev tools.
+  // Create /opt/venv from uv.lock (dev tools included), then build the ROS 2 package into /opt/ros2_ws.
+  "postCreateCommand": "uv sync --all-extras --all-groups && bash -c 'source /opt/ros/humble/setup.bash && colcon --log-base /opt/ros2_ws/log build --base-paths ros2_ws/src --symlink-install --build-base /opt/ros2_ws/build --install-base /opt/ros2_ws/install'",
   "customizations": {
     "vscode": {
       "extensions": [

@@ -25,6 +25,23 @@ def make_pose(rotation: FloatArray, translation: FloatArray) -> FloatArray:
     return pose  # Finished transform.
 
 
+def orthonormalize_pose(pose: FloatArray) -> FloatArray:
+    """Project a pose's rotation block back onto SO(3) (nearest rotation, via SVD).
+
+    Repeatedly composing poses (e.g. coasting on a constant-velocity model through a long
+    tracking failure) lets round-off accumulate until the rotation is no longer orthonormal.
+
+    Args:
+        pose: 4x4 transform.
+
+    Returns:
+        Copy with an exactly orthonormal rotation (det +1).
+    """
+    u, _, vt = np.linalg.svd(pose[:3, :3])  # Polar decomposition.
+    rotation = u @ np.diag([1.0, 1.0, float(np.sign(np.linalg.det(u @ vt)))]) @ vt  # Nearest proper rotation.
+    return make_pose(rotation, pose[:3, 3])  # Same translation.
+
+
 def invert_pose(pose: FloatArray) -> FloatArray:
     """Invert a rigid transform using its structure instead of a general matrix inverse.
 

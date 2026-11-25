@@ -27,6 +27,7 @@ def build_parser() -> argparse.ArgumentParser:
     run = commands.add_parser("run", help="Run one experiment from a YAML config.")  # `metricvision run`.
     run.add_argument("config", type=Path, help="Path to the experiment YAML file.")  # Required config path.
     run.add_argument("--matcher", help="Override the front end (e.g. orb, sift).")  # Swap extractor without editing YAML.
+    run.add_argument("--stereo-frontend", help="Sparse pipeline front end: fast_orb_klt (classical) or superpoint_lightglue (learned).")
     run.add_argument("--dataset-root", help="Override the dataset root folder.")  # Point at data elsewhere.
     run.add_argument("--max-frames", type=int, help="Process at most this many frames.")  # Quick tests.
     run.add_argument("--output-dir", type=Path, help="Override the results root folder.")  # Redirect outputs.
@@ -77,6 +78,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         depth=args.depth,  # Optional depth source.
         window=args.window,  # Optional BA size.
         depth_prior=args.depth_prior,  # Optional priors.
+        stereo_frontend=args.stereo_frontend,  # Optional classical/learned front end.
     )
     runner = ExperimentRunner(config)  # Build all components.
     summary = runner.run(show_progress=not args.no_progress)  # Run the experiment.

@@ -11,3 +11,8 @@ results/
 data/
 docs/
 CLAUDE.md
+ros_bags
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/
+.vscode/browse.vc.db*
