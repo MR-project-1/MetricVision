@@ -95,6 +95,11 @@ def main() -> None:
                     used_dirs += 1
         print(f"{bag.name}: {used_axes} turning and {used_dirs} straight relative motions")
 
+    if len(axes_cam) < 5 or len(dirs_cam) < 5:  # Both are needed: turns fix the up axis, straight driving the forward axis.
+        raise SystemExit(
+            f"not enough motion: {len(axes_cam)} turning and {len(dirs_cam)} straight relative motions (need >= 5 each). "
+            "Record a drive with at least one clear turn and a few metres straight, with the motors on (wheel /odom)."
+        )
     a = np.array(axes_cam + dirs_cam)
     b = np.array(axes_base + dirs_base)
     w = np.r_[np.full(len(axes_cam), 1.0 / max(len(axes_cam), 1)), np.full(len(dirs_cam), 1.0 / max(len(dirs_cam), 1))]

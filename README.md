@@ -185,6 +185,51 @@ lost its heading on `small_run_02` (42° vs 0.3°), at about half the speed on t
   re-estimated from still frames (Sampson RMS 0.35 px) with the MC-Calib baseline length (0.419 m).
 - The TF camera→base rotation is off by ~7° pitch / 5.5° yaw; `body_from_left` was re-estimated from VO vs `/odom`.
 
+## Camera calibration: from MC-Calib to the rig files
+
+The rig file (`configs/wheelchair/rig_640x480*.yaml`) holds everything the VO needs: intrinsics `k_*`/`d_*`, the
+stereo extrinsic `right_from_left` (left = cam1) and the camera-to-wheelchair pose `body_from_left`. Where each part
+comes from:
+
+| Part | Source | Tool |
+|---|---|---|
+| Intrinsics (640×480) | RealSense factory `camera_info` | read from the bag by `calibrate_rig_from_bags.py` |
+| Baseline **length** (0.419 m) | **MC-Calib** (ChArUco board, 1280×720): `configs/wheelchair/mc_calib_1280x720.yaml` | `--mc-calib` of `calibrate_rig_from_bags.py` |
+| Stereo **rotation** + baseline direction | still frames of a bag (SIFT + essential matrix + Sampson refinement) | `scripts/calibrate_rig_from_bags.py` |
+| Camera → wheelchair rotation | VO vs wheel odometry on a driving bag (turns give the up axis, straight driving the forward axis) | `scripts/estimate_camera_to_base.py` |
+| Live drift of the stereo rotation | live left/right matches, at start and when tracking fails | the node (`auto_stereo_calib`) |
+
+Why not MC-Calib alone: its rotation was already stale for the recorded bags (~20 px row misalignment), because
+the cameras moved after the board calibration; the mount keeps moving (8.7°, then 3°). MC-Calib's metric
+baseline is kept, since one stereo pair cannot observe scale.
+
+Files: `rig_640x480.yaml` = rig of the recorded bags (offline runs, `configs/wheelchair.yaml`);
+`rig_640x480_live.yaml` = rig as mounted now (live node, `vo_params.yaml` → `calibration:`).
+
+**Applying a new MC-Calib calibration** (e.g. after re-mounting or re-measuring the cameras):
+
+1. Run MC-Calib with the ChArUco board and copy its result over `configs/wheelchair/mc_calib_1280x720.yaml`
+   (camera_0 = cam1/left, camera_1 = cam2/right; only the baseline length of camera_1's pose is used).
+2. Record a short bag with **both** cameras at 640×480: stand still for ~20 s (step 3 uses these frames), then
+   drive a few metres straight and make at least one clear turn **with the motors on**, so wheel `/odom` moves
+   (step 4 uses this): `ros2 launch metricvision_ros vo.launch.py record:=true` (bag in `results/live/<run>/bag`).
+3. Re-estimate the stereo extrinsic from the still part:
+   ```bash
+   uv run python scripts/calibrate_rig_from_bags.py results/live/<run>/bag \
+       --mc-calib configs/wheelchair/mc_calib_1280x720.yaml --out configs/wheelchair/rig_640x480_live.yaml
+   ```
+   It prints the vertical disparity before/after (aim for a median below 1 px). This writes `body_from_left` from
+   `/tf_static`, which is ~7° off, so continue with step 4.
+4. Correct the camera → wheelchair rotation from the driving part (needs a classical run of that bag first):
+   ```bash
+   uv run metricvision run configs/wheelchair.yaml --dataset-root results/live/<run>/bag --pipeline sparse --window 5 \
+       --calibration configs/wheelchair/rig_640x480_live.yaml --run-name classical --output-dir results/simulation
+   uv run python scripts/estimate_camera_to_base.py --bags results/live/<run> --run classical \
+       --calibration configs/wheelchair/rig_640x480_live.yaml
+   ```
+5. Start the live node as usual; it loads `rig_640x480_live.yaml`. For the offline bags, write to
+   `rig_640x480.yaml` instead.
+
 ## Troubleshooting
 
 | Symptom | Fix |
