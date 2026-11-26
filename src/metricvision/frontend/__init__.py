@@ -1,7 +1,9 @@
 """Front ends (feature extraction + matching). Importing this package registers every front end."""
 
 from metricvision.frontend import (  # noqa: F401  # Imported for their registration side effect (learned loads torch lazily).
+    dense_mast3r,
     learned,
+    lightglue_matchers,
     orb,
     sift,
     stereo_klt,

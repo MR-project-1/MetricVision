@@ -18,6 +18,7 @@ from metricvision.config import ExperimentConfig  # Experiment settings.
 from metricvision.core.types import StereoCamera  # Rectified camera model.
 from metricvision.datasets import DATASETS, StereoDataset  # Dataset registry (import registers loaders).
 from metricvision.depth import DEPTH_ESTIMATORS, DepthEstimator  # Depth registry (import registers estimators).
+from metricvision.dynamic import MASKERS  # Movable-object segmentation.
 from metricvision.evaluation.trajectory_metrics import TrajectoryErrors, evaluate_trajectory  # Accuracy metrics.
 from metricvision.evaluation.writers import write_json, write_kitti, write_rows_csv, write_tum  # Output writers.
 from metricvision.frontend import MATCHERS, STEREO_FRONTENDS  # Front-end registries (import registers them).
@@ -153,13 +154,14 @@ def build_odometry(config: ExperimentConfig, camera: StereoCamera) -> StereoVisu
     Returns:
         The dense or sparse VO pipeline.
     """
+    masker = MASKERS.create(config.dynamic_masker.name, **config.dynamic_masker.params) if config.odometry.dynamic_mask else None  # Movable objects.
     if config.pipeline == "sparse":  # Sparse stereo front end, frame-to-frame tracking.
         frontend = STEREO_FRONTENDS.create(config.stereo_frontend.name, **config.stereo_frontend.params)  # Front end under test.
         prior = DEPTH_ESTIMATORS.create(config.prior_depth.name, **config.prior_depth.params) if config.odometry.depth_prior else None  # BA priors.
-        return SparseStereoOdometry(camera, frontend, config.odometry, prior)
+        return SparseStereoOdometry(camera, frontend, config.odometry, prior, masker)
     matcher = MATCHERS.create(config.matcher.name, **config.matcher.params)  # Pairwise matcher + dense SGBM depth.
     depth: DepthEstimator = DEPTH_ESTIMATORS.create(config.depth.name, **config.depth.params)  # Fixed depth source.
-    return StereoVisualOdometry(camera, matcher, depth, config.odometry)
+    return StereoVisualOdometry(camera, matcher, depth, config.odometry, masker)
 
 
 class ExperimentRunner:

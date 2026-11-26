@@ -2,8 +2,9 @@
 
 Two registrations:
 
-* ``MATCHERS["superpoint_lightglue"]``: a pairwise matcher for the dense pipeline (keyframe -> frame),
-  so learned features are compared with ORB/SIFT under the identical back end.
+* ``MATCHERS["superpoint_lightglue_hf"]``: a pairwise matcher for the dense pipeline (keyframe -> frame) using these
+  same networks. (``MATCHERS["superpoint_lightglue"]`` is the official cvg/LightGlue implementation in
+  ``frontend/lightglue_matchers.py``, used for the front-end benchmark.)
 * ``STEREO_FRONTENDS["superpoint_lightglue"]``: the hybrid stereo front end for the sparse pipeline.
   Per frame: SuperPoint on both images, LightGlue left<->right (stereo) and previous-left<->current-left
   (temporal). The network proposes correspondences; the rig decides:
@@ -25,6 +26,7 @@ import numpy as np  # Array maths.
 from scipy.spatial import cKDTree  # Nearest-neighbour lookups of track positions.
 
 from metricvision.core.types import BoolArray, Correspondences, Features, Float32Array, ImageArray  # Shared types.
+from metricvision.dynamic import pixels_in_mask  # Forbidden-region lookups.
 from metricvision.frontend.base import MATCHERS, SparseFeatureMatcher  # Pairwise registry and caching base.
 from metricvision.frontend.stereo_klt import STEREO_FRONTENDS, FastOrbKltFrontend, StereoTracks  # Stereo registry and KLT/epipolar helpers.
 
@@ -138,11 +140,11 @@ class LearnedModels:
             self.torch.cuda.synchronize()  # Block.
 
 
-@MATCHERS.register("superpoint_lightglue")
+@MATCHERS.register("superpoint_lightglue_hf")
 class SuperPointLightGlueMatcher(SparseFeatureMatcher):
     """Pairwise learned matcher for the dense pipeline: SuperPoint features, LightGlue matching."""
 
-    name = "superpoint_lightglue"  # Output folder name.
+    name = "superpoint_lightglue_hf"  # Output folder name.
 
     def __init__(self, max_keypoints: int = 2000, ratio: float = 0.8, mutual_check: bool = True, min_confidence: float = 0.0) -> None:
         """Configure the matcher.
@@ -308,19 +310,22 @@ class SuperPointLightGlueStereoFrontend(FastOrbKltFrontend):
         self._current = _FrameFeatures(left, kps_l, desc_l, scores_l, right_of)  # Cache.
         return self._current  # Done.
 
-    def detect(self, left: ImageArray, right: ImageArray, existing: StereoTracks) -> StereoTracks:
+    def detect(self, left: ImageArray, right: ImageArray, existing: StereoTracks, forbidden: BoolArray | None = None) -> StereoTracks:
         """New stereo tracks from this frame's rig-consistent LightGlue stereo matches, away from existing tracks.
 
         Args:
             left: Rectified left image.
             right: Rectified right image.
             existing: Tracks already present in this frame.
+            forbidden: Optional (H, W) mask of regions where no new tracks may start (e.g. moving objects).
 
         Returns:
             New tracks only.
         """
         frame = self._features(left, right)  # Cached features.
         candidates = np.array([i for i in frame.right_of if i not in frame.position_of], dtype=np.int64)  # Unused stereo keypoints.
+        if candidates.size and forbidden is not None:  # E.g. the dynamic-object mask.
+            candidates = candidates[~pixels_in_mask(forbidden, frame.kps[candidates])]  # No tracks on moving objects.
         if candidates.size == 0:  # Nothing new.
             return StereoTracks.empty()  # Empty.
         if len(existing):  # Keep new tracks away from existing ones.

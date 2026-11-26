@@ -12,6 +12,8 @@ body: joint left+right reprojection LM and a sliding-window rigid-rig bundle adj
 
 References: live, DLIO lidar-inertial odometry (`/Odometry`) when it publishes, else wheel odometry (`/odom`);
 offline, KITTI/EuRoC ground truth and wheel `/odom` for the bags.
+Learned front ends (SuperPoint+LightGlue, ALIKED+LightGlue, MASt3R) and dynamic-object handling are
+benchmarked under one fixed back end in [Part 3](#learned-front-ends-superpoint-aliked-mast3r).
 
 Part 3 keeps the mid-submission benchmark (KITTI 00, EuRoC MH_01), the windowed BA and the Depth Anything V2
 monocular depth priors (`--window 5 --depth-prior`) with the commands and scripts that reproduce them, and the
@@ -533,6 +535,90 @@ The laptop container (`.devcontainer/laptop/`) is the one used for parts 1 and 2
 Both images use Ubuntu 22.04 with its system Python 3.10 and the same
 `uv.lock`, so the environment is identical on both machines. Adding ROS 2
 Humble's `rclpy` later works because it is built for that same Python.
+
+### Learned front ends: SuperPoint, ALIKED, MASt3R
+
+Three learned front ends plug into the same pairwise `FeatureMatcher` interface as ORB and SIFT. They run under
+the identical dense back end (keyframe matching, SGBM depth, PnP + our LM, same thresholds), at native image
+resolution with the same 2000-keypoint budget:
+
+| `--matcher` | Method | Notes |
+|---|---|---|
+| `superpoint_lightglue` | SuperPoint + LightGlue (official cvg/LightGlue) | ~0.4 GB VRAM; weights download on first use |
+| `aliked_lightglue` | ALIKED + LightGlue | ~0.8 GB VRAM |
+| `mast3r` | MASt3R dense matcher (2D matches only, never its 3D output) | ~2.8 GB VRAM, ~6 GB host RAM while loading; non-commercial licence |
+
+```bash
+uv sync --all-groups --extra learned
+# MASt3R only: clone the research code and fetch the checkpoint (~2.75 GB)
+git clone --recursive https://github.com/naver/mast3r.git third_party/mast3r
+D=third_party/mast3r/checkpoints/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric; mkdir -p $D
+B=https://huggingface.co/naver/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric/resolve/main
+curl -L -o $D/config.json $B/config.json && curl -L -C - -o $D/model.safetensors $B/model.safetensors
+# Run any of them
+uv run metricvision run configs/kitti.yaml --dataset-root ~/datasets/kitti --pipeline dense --matcher aliked_lightglue --refine lm --run-name dense_aliked_lg_lm
+```
+
+**The same KITTI pair, matched by every front end** (green: consistent with one essential matrix at 1 px; red: outliers):
+
+<p align="center"><img src="assets/readme/frontend_matches.jpg" width="760" alt="One KITTI image pair matched by ORB, SIFT, SuperPoint+LightGlue, ALIKED+LightGlue and MASt3R"></p>
+
+**Full-sequence results under one back end** (KITTI 00, 4541 frames; EuRoC MH_01, 3682 frames; 0 tracking failures in every run):
+
+![Drift, per-frame error, inliers and runtime per front end](assets/readme/frontend_metrics.png)
+
+| Front end (dense pipeline, our LM) | KITTI t_rel | KITTI r_rel | KITTI RPE | Inliers | ms/frame | EuRoC ATE |
+|---|---|---|---|---|---|---|
+| ORB | 1.73% | 0.79°/100 m | 4.9 cm | 252 | 49 | 13.7 cm |
+| SIFT | 1.41% | 0.52°/100 m | 2.9 cm | 325 | 83 | 4.9 cm |
+| SuperPoint + LightGlue | 1.80% | 0.66°/100 m | 3.2 cm | 493 | 233 | 7.1 cm |
+| ALIKED + LightGlue | 1.62% | 0.58°/100 m | 2.9 cm | 502 | 204 | 10.9 cm |
+| MASt3R | 2.22% | 0.91°/100 m | 3.3 cm | 367 | 249 | 13.5 cm |
+| *Sparse FAST/ORB/KLT + windowed BA (ours)* | **1.18%** | **0.39°/100 m** | 3.5 cm | 526 | 137 | 5.1 cm |
+
+What this shows:
+* **More matches do not mean less drift.** The LightGlue front ends find about 2x ORB's inliers and lower per-frame
+  error, but their long-range drift is no better than SIFT's. In a fixed metric back end, drift is set by depth
+  quality and pose estimation as much as by matching.
+* **MASt3R is robust but imprecise here.** It matches a 512x160 version of the image, so each match is only
+  accurate to about ±1.2 px at KITTI's native resolution, and its drift is the highest. Its strength is coverage:
+  it matches textureless road and sky that keypoint detectors ignore.
+* The learned front ends are 4-5x slower than ORB on a laptop RTX 3060 (timings measured with two runs in parallel).
+  The sparse pipeline with windowed BA remains the most accurate configuration.
+
+### Dynamic scenes: moving objects and occlusions
+
+Two complementary, optional layers handle moving objects and occlusions:
+
+* **Geometric gate** (`--dynamic-gate`, sparse pipeline, no network). Before a new stereo observation is fused
+  into a track's landmark, a 3σ Mahalanobis test checks it against the landmark's covariance. Points on moving
+  objects, or tracks that jumped onto an occluder, fail and are dropped. It is class-agnostic and free.
+* **Semantic mask** (`--dynamic-mask`, both pipelines). SegFormer-B0 trained on Cityscapes (~170 MiB VRAM, ~14 ms)
+  masks people, riders, cars, trucks, buses and bikes. No features are detected or tracked there, and matches
+  landing on them are dropped.
+
+Evaluated on KITTI 00 and on **KITTI 07** (busy streets and intersections):
+
+![KITTI 07 trajectories with and without dynamic handling, and where gate and mask act](assets/readme/dynamic_kitti_07.png)
+
+| | KITTI 00 ATE | KITTI 07 ATE | KITTI 07 t_rel | Removed per frame |
+|---|---|---|---|---|
+| Dense ORB | 8.97 m | 4.60 m | 2.40% | – |
+| Dense ORB + semantic mask | 22.16 m | 5.99 m | 2.74% | ~150 matches |
+| Sparse + windowed BA | 6.33 m | 2.53 m | 1.35% | – |
+| + geometric gate | 6.76 m | 2.52 m | 1.36% | ~3 tracks |
+| + semantic mask | 6.26 m | 2.69 m | 1.42% | ~3.5 tracks |
+| + gate + mask | 6.25 m | 2.60 m | 1.40% | ~6 tracks |
+
+What this shows:
+* **On KITTI, class-based masking hurts.** Most cars are parked: they are close, textured and static, which makes
+  them some of the best metric features. Masking them removes ~150 matches per frame from the dense pipeline,
+  and drift rises.
+* **The sparse pipeline already rejects movers.** Its circular L/R check, RANSAC and the LM's χ² test remove almost
+  everything that moves, so the gate and the mask find only 3-6 more tracks per frame. The changes stay within
+  about ±0.4 m.
+* A fair test needs genuinely dynamic sequences: dense traffic, crowds, or synthetic data with moving objects such
+  as Virtual KITTI 2. KITTI 07's moving vehicles are a small fraction of its features.
 
 ### Design decisions
 

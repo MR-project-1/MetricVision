@@ -32,6 +32,13 @@ prior_depth:  # Monocular metric depth network: windowed-BA priors (--depth-prio
     input_size: 392  # Short side of the network input (multiple of 14).
     max_depth: 80.0  # Ignore predictions beyond this.
 
+dynamic_masker:  # Segmentation of movable objects (people, riders, vehicles), used with --dynamic-mask.
+  name: segformer_cityscapes  # SegFormer trained on Cityscapes (needs `uv sync --extra learned`).
+  params:
+    model: nvidia/segformer-b0-finetuned-cityscapes-1024-1024  # ~4M parameters, ~170 MiB VRAM in fp16.
+    input_height: 384  # Network input height (rounded to /32).
+    dilate_px: 8  # Grow the mask to cover object boundaries.
+
 depth:
   name: sgbm  # Fixed stereo depth source.
   params:
@@ -49,6 +56,9 @@ odometry:
   depth_prior: false  # Sparse only: gated monocular depth priors in the BA (--depth-prior).
   depth_prior_rel_sigma: 0.1  # Prior std as a fraction of depth.
   depth_prior_scale_align: true  # Rescale network depth to the stereo scale per keyframe.
+  dynamic_mask: false  # Mask people and vehicles: no features detected/tracked there (--dynamic-mask).
+  dynamic_gate: false  # Sparse only: drop tracks whose new stereo point disagrees with their landmark (--dynamic-gate).
+  dynamic_gate_chi2: 16.27  # Mahalanobis threshold of that test (chi^2, 3 dof, 99.9%).
   pnp:
     reprojection_error_px: 2.0  # PnP RANSAC inlier threshold.
     iterations: 200  # PnP RANSAC iterations.
