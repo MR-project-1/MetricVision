@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Fast DDS profile for the dev container: UDP only, no shared memory.
+     Host and container share the network but not a usable shared-memory transport, so with the default
+     (SHM for same-host peers) discovery works and `ros2 topic list` shows the cameras, yet no image
+     ever arrives. Advertising only UDP makes every peer, host or wheelchair, send the data over UDP.
+     Data sharing (Fast DDS zero-copy through /dev/shm, separate from the SHM transport) is switched off too:
+     its robust mutexes across PID namespaces abort processes (rviz2: "__pthread_mutex_lock_full: Assertion
+     `e != ESRCH || !robust' failed"). -->
+<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+  <transport_descriptors>
+    <transport_descriptor>
+      <transport_id>udp_only</transport_id>
+      <type>UDPv4</type>
+    </transport_descriptor>
+  </transport_descriptors>
+  <participant profile_name="udp_only_participant" is_default_profile="true">
+    <rtps>
+      <userTransports>
+        <transport_id>udp_only</transport_id>
+      </userTransports>
+      <useBuiltinTransports>false</useBuiltinTransports>
+    </rtps>
+  </participant>
+  <data_writer profile_name="no_data_sharing_writer" is_default_profile="true">
+    <qos><data_sharing><kind>OFF</kind></data_sharing></qos>
+  </data_writer>
+  <data_reader profile_name="no_data_sharing_reader" is_default_profile="true">
+    <qos><data_sharing><kind>OFF</kind></data_sharing></qos>
+  </data_reader>
+</profiles>

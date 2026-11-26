@@ -160,6 +160,8 @@ class ExperimentConfig:
         depth: str | None = None,
         window: int | None = None,
         depth_prior: bool | None = None,
+        stereo_frontend: str | None = None,
+        calibration: str | None = None,
         dynamic_mask: bool | None = None,
         dynamic_gate: bool | None = None,
     ) -> ExperimentConfig:
@@ -182,6 +184,9 @@ class ExperimentConfig:
             depth: Depth estimator of the dense pipeline; reuses ``prior_depth`` params when the names match.
             window: Windowed-BA size for the sparse pipeline (0 disables).
             depth_prior: Enable/disable monocular depth priors in the windowed BA.
+            stereo_frontend: Sparse-pipeline front end (``fast_orb_klt`` classical, ``superpoint_lightglue`` learned);
+                its params are kept (the learned front end extends the classical one and accepts them).
+            calibration: Rig calibration YAML for datasets that take one (the wheelchair rosbags).
             dynamic_mask: Enable/disable semantic masking of movable objects.
             dynamic_gate: Enable/disable the geometric dynamic/occlusion gate (sparse pipeline).
 
@@ -220,6 +225,10 @@ class ExperimentConfig:
             config = replace(config, odometry=replace(config.odometry, dynamic_gate=dynamic_gate))  # Nested replace.
         if anchor is not None:  # Switch sparse point anchoring (for ablations).
             config = replace(config, odometry=replace(config.odometry, sparse_point_anchor=anchor))  # Nested replace.
+        if stereo_frontend is not None and stereo_frontend != config.stereo_frontend.name:  # Classical <-> learned.
+            config = replace(config, stereo_frontend=ComponentConfig(stereo_frontend, dict(config.stereo_frontend.params)))
+        if calibration is not None:  # Another rig file (e.g. a freshly calibrated one for a new recording).
+            config = replace(config, dataset=ComponentConfig(config.dataset.name, {**config.dataset.params, "calibration": calibration}))
         if run_name is not None:  # Name the output folder.
             config = replace(config, run_name=run_name)  # Set it.
         return config  # Updated copy (the original is untouched).

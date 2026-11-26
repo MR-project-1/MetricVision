@@ -1170,6 +1170,8 @@ dependencies = [
 [package.optional-dependencies]
 learned = [
     { name = "einops" },
+    { name = "kornia", version = "0.8.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "kornia", version = "0.9.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "lightglue" },
     { name = "roma" },
     { name = "torch", version = "2.14.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -1191,6 +1193,7 @@ dev = [
 requires-dist = [
     { name = "einops", marker = "extra == 'learned'", specifier = ">=0.8" },
     { name = "evo", specifier = ">=1.28" },
+    { name = "kornia", marker = "extra == 'learned'", specifier = ">=0.7.3" },
     { name = "lightglue", marker = "extra == 'learned'", git = "https://github.com/cvg/LightGlue.git?rev=5a650c444718caffc2669dc0094cde908f42dd73" },
     { name = "numpy", specifier = ">=1.24" },
     { name = "opencv-python-headless", specifier = ">=4.8" },

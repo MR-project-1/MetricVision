@@ -15,6 +15,7 @@ from metricvision.backend.odometry import StereoVisualOdometry  # Dense keyframe
 from metricvision.backend.stats import FrameStats  # Per-frame measurements.
 from metricvision.backend.stereo_odometry import SparseStereoOdometry  # Sparse frame-to-frame VO pipeline.
 from metricvision.config import ExperimentConfig  # Experiment settings.
+from metricvision.core.types import StereoCamera  # Rectified camera model.
 from metricvision.datasets import DATASETS, StereoDataset  # Dataset registry (import registers loaders).
 from metricvision.depth import DEPTH_ESTIMATORS, DepthEstimator  # Depth registry (import registers estimators).
 from metricvision.dynamic import MASKERS  # Movable-object segmentation.
@@ -143,6 +144,26 @@ class RunSummary:
         return asdict(self)  # Recursively converts the nested TrajectoryErrors too.
 
 
+def build_odometry(config: ExperimentConfig, camera: StereoCamera) -> StereoVisualOdometry | SparseStereoOdometry:
+    """Instantiate the VO pipeline named in a config (shared by offline runs and the ROS 2 node).
+
+    Args:
+        config: Experiment configuration.
+        camera: Rectified stereo camera.
+
+    Returns:
+        The dense or sparse VO pipeline.
+    """
+    masker = MASKERS.create(config.dynamic_masker.name, **config.dynamic_masker.params) if config.odometry.dynamic_mask else None  # Movable objects.
+    if config.pipeline == "sparse":  # Sparse stereo front end, frame-to-frame tracking.
+        frontend = STEREO_FRONTENDS.create(config.stereo_frontend.name, **config.stereo_frontend.params)  # Front end under test.
+        prior = DEPTH_ESTIMATORS.create(config.prior_depth.name, **config.prior_depth.params) if config.odometry.depth_prior else None  # BA priors.
+        return SparseStereoOdometry(camera, frontend, config.odometry, prior, masker)
+    matcher = MATCHERS.create(config.matcher.name, **config.matcher.params)  # Pairwise matcher + dense SGBM depth.
+    depth: DepthEstimator = DEPTH_ESTIMATORS.create(config.depth.name, **config.depth.params)  # Fixed depth source.
+    return StereoVisualOdometry(camera, matcher, depth, config.odometry, masker)
+
+
 class ExperimentRunner:
     """Builds the components named in a config and runs one sequence through them."""
 
@@ -154,20 +175,7 @@ class ExperimentRunner:
         """
         self._config = config  # Settings.
         self._dataset: StereoDataset = DATASETS.create(config.dataset.name, **config.dataset.params)  # Data source.
-        self._odometry: StereoVisualOdometry | SparseStereoOdometry  # Either pipeline; both share one interface.
-        masker = (
-            MASKERS.create(config.dynamic_masker.name, **config.dynamic_masker.params) if config.odometry.dynamic_mask else None
-        )  # Movable objects.
-        if config.pipeline == "sparse":  # Sparse stereo front end, frame-to-frame tracking.
-            frontend = STEREO_FRONTENDS.create(config.stereo_frontend.name, **config.stereo_frontend.params)  # Front end under test.
-            prior = (
-                DEPTH_ESTIMATORS.create(config.prior_depth.name, **config.prior_depth.params) if config.odometry.depth_prior else None
-            )  # BA priors.
-            self._odometry = SparseStereoOdometry(self._dataset.camera, frontend, config.odometry, prior, masker)  # VO pipeline.
-        else:  # Pairwise matcher + dense SGBM depth, keyframe tracking.
-            matcher = MATCHERS.create(config.matcher.name, **config.matcher.params)  # Front end under test.
-            depth: DepthEstimator = DEPTH_ESTIMATORS.create(config.depth.name, **config.depth.params)  # Fixed depth source.
-            self._odometry = StereoVisualOdometry(self._dataset.camera, matcher, depth, config.odometry, masker)  # VO pipeline.
+        self._odometry = build_odometry(config, self._dataset.camera)  # VO pipeline.
 
     @property
     def output_dir(self) -> Path:
@@ -219,6 +227,8 @@ class ExperimentRunner:
         output_dir.mkdir(parents=True, exist_ok=True)  # Create folders as needed.
         write_tum(estimate, output_dir / "trajectory.tum")  # For evo (TUM/EuRoC ground truth).
         write_kitti(estimate, output_dir / "trajectory.kitti")  # For evo/devkit (KITTI ground truth).
+        if reference is not None:  # Ground truth next to the estimate (same body frame), for plots and comparisons.
+            write_tum(reference, output_dir / "reference.tum")
         write_rows_csv([s.to_dict() for s in stats], output_dir / "frame_stats.csv")  # Per-frame data for plots.
         write_json(summary.to_dict(), output_dir / "summary.json")  # Aggregates.
         return summary  # Also returned for programmatic use (tests, sweeps).

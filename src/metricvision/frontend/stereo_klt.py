@@ -35,10 +35,12 @@ class StereoTracks:
     Attributes:
         left: (N, 2) float32 pixel coordinates in the left image.
         right: (N, 2) float32 pixel coordinates in the right image.
+        confidence: Optional (N,) learned match confidence in (0, 1] (None for classical front ends).
     """
 
     left: Float32Array  # Left observations.
     right: Float32Array  # Right observations.
+    confidence: Float32Array | None = None  # Learned confidence (LightGlue), if any.
 
     def __len__(self) -> int:
         """Return the number of stereo pairs.
@@ -75,7 +77,8 @@ class StereoTracks:
         Returns:
             Filtered tracks.
         """
-        return StereoTracks(self.left[mask], self.right[mask])  # Same rows from both images.
+        conf = None if self.confidence is None else self.confidence[mask]  # Same rows.
+        return StereoTracks(self.left[mask], self.right[mask], conf)  # Same rows from both images.
 
     def concatenate(self, other: StereoTracks) -> StereoTracks:
         """Append another set of pairs.
@@ -86,7 +89,11 @@ class StereoTracks:
         Returns:
             Combined tracks.
         """
-        return StereoTracks(np.vstack([self.left, other.left]), np.vstack([self.right, other.right]))  # Stack rows.
+        conf = None  # Classical tracks carry no confidence.
+        if self.confidence is not None or other.confidence is not None:  # Mixed: missing confidences count as 1.
+            ones = [np.ones(len(t), dtype=np.float32) if t.confidence is None else t.confidence for t in (self, other)]  # Fill.
+            conf = np.concatenate(ones).astype(np.float32)  # Stack.
+        return StereoTracks(np.vstack([self.left, other.left]), np.vstack([self.right, other.right]), conf)  # Stack rows.
 
 
 class StereoFrontend(ABC):
