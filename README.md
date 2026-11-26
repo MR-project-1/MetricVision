@@ -14,7 +14,8 @@ References: live, DLIO lidar-inertial odometry (`/Odometry`) when it publishes, 
 offline, KITTI/EuRoC ground truth and wheel `/odom` for the bags.
 
 Part 3 keeps the mid-submission benchmark (KITTI 00, EuRoC MH_01), the windowed BA and the Depth Anything V2
-monocular depth priors (`--window 5 --depth-prior`), with the commands and scripts that reproduce them.
+monocular depth priors (`--window 5 --depth-prior`) with the commands and scripts that reproduce them, and the
+final-phase results (BA + loop closure, robustness of the learned front end).
 
 ![VO debug view](assets/readme/wheelchair_vo_debug.jpg)
 
@@ -233,7 +234,7 @@ Files: `rig_640x480.yaml` = rig of the recorded bags (offline runs, `configs/whe
 5. Start the live node as usual; it loads `rig_640x480_live.yaml`. For the offline bags, write to
    `rig_640x480.yaml` instead.
 
-## Part 3: Mid-submission results, windowed BA and monocular depth priors
+## Part 3: Earlier results (mid submission, depth priors, final phase)
 
 Kept from the mid submission (Oct 2026): the dataset benchmark of the sparse and dense pipelines, the windowed-BA
 and Depth Anything V2 depth-prior proof of concept, the scripts that reproduce them, and the design notes. Part 2
@@ -452,6 +453,73 @@ Quick check of the network on its own (scale vs stereo, error, runtime, GPU memo
 ```bash
 uv run python scripts/check_mono_depth.py --config configs/kitti.yaml --dataset-root ~/datasets/kitti --frames 20
 ```
+
+### Final phase: GTSAM BA, loop closure and hybrid learned VO (KITTI 00)
+
+Results of the final-phase experiments (Nov 2026). **Code status:** the GTSAM window BA (`backend/ba.py`), loop
+closure (`backend/loop_closure.py`, DINOv2 / thumbnail place recognition + GTSAM pose graph) and confidence
+weighting live in commit `f3a98c4` and are **not on this branch**: that commit replaces the window BA and the
+Depth Anything V2 prior above, which are still in use. The SuperPoint+LightGlue front end from it is on this
+branch (`--stereo-frontend superpoint_lightglue`, the "learned" approach of parts 1 and 2).
+
+| method (KITTI 00, 4541 frames, 3.7 km) | ATE RMSE [m] | ATE max [m] | t_rel [%] | r_rel [°/100 m] | RPE 1-frame [m] | loops | FPS |
+|---|---|---|---|---|---|---|---|
+| classical VO (mid-submission method) | 10.30 | 21.11 | 1.38 | 0.49 | 0.03 | 0 | 11.1 |
+| + window BA | 5.55 | 10.14 | 1.16 | 0.38 | 0.07 | 0 | 6.6 |
+| + BA + loop closure (thumbnail) | 1.79 | 3.70 | 0.86 | 0.31 | 0.08 | 32 | 5.6 |
+| + BA + loop closure (DINOv2) | 1.86 | 4.03 | 0.89 | 0.31 | 0.12 | 37 | 8.7 |
+| SuperPoint+LightGlue VO (KLT sub-pixel) | 14.05 | 29.43 | 1.65 | 0.60 | 0.03 | 0 | 6.7 |
+| + confidence weighting | 14.08 | 29.56 | 1.65 | 0.60 | 0.03 | 0 | 8.0 |
+| **full hybrid: SP+LG + BA + DINOv2 loop** | **1.73** | **3.47** | 0.90 | 0.37 | 0.17 | 36 | 6.2 |
+
+![KITTI 00 trajectories of the final-phase runs](assets/readme/final/kitti_00_trajectories.png)
+
+![KITTI 00 error of the final-phase runs](assets/readme/final/kitti_00_error.png)
+
+Old (mid-submission) vs new, step by step:
+
+![Old vs new trajectories](assets/readme/final/old_vs_new_1_trajectories.png)
+
+![Zoom on the worst drift](assets/readme/final/old_vs_new_2_zoom_worst_drift.png)
+
+![Error over time](assets/readme/final/old_vs_new_3_error_over_time.png)
+
+![Metrics](assets/readme/final/old_vs_new_4_metrics.png)
+
+![Improvement per step](assets/readme/final/old_vs_new_5_improvement_steps.png)
+
+Findings: BA halves the drift and loop closure removes most of what is left (ATE -83 %). On KITTI's
+well-textured, well-lit images the learned front end is *less* accurate than FAST/ORB + KLT, and confidence
+weighting changes nothing (LightGlue is confident on nearly every match there). BA and loop closure raise the
+1-frame RPE: corrections are blended between keyframes, so global accuracy improves at some cost in local smoothness.
+
+**Robustness under simulated hard conditions** (KITTI 00 images degraded; same rig PnP + LM for both front ends):
+
+![Conventional vs hybrid front end under hard conditions](assets/readme/final/robustness.png)
+
+| condition | front end | stereo tracks | median t err [cm] | median r err [°] | failures [%] |
+|---|---|---|---|---|---|
+| normal | conventional (FAST+ORB+KLT) | 487 | 1.3 | 0.032 | 0 |
+| normal | hybrid (SuperPoint+LightGlue) | 391 | 1.3 | 0.029 | 0 |
+| dark | conventional | 97 | 1.5 | 0.034 | 2 |
+| dark | hybrid | 186 | 1.3 | 0.033 | 0 |
+| motion blur | conventional | 178 | 1.7 | 0.041 | 2 |
+| motion blur | hybrid | 210 | 1.4 | 0.030 | 0 |
+| noise | conventional | 301 | 1.4 | 0.038 | 0 |
+| noise | hybrid | 152 | 1.4 | 0.031 | 0 |
+| fast motion (skip 4) | conventional | 194 | 6.9 | 0.062 | 5 |
+| fast motion (skip 4) | hybrid | 173 | 6.0 | 0.067 | 0 |
+
+The learned front end keeps more tracks in the dark and under blur and never loses tracking, where the classical
+one fails on 2-5 % of frames. Matches per condition:
+
+| normal | dark | motion blur |
+|---|---|---|
+| ![normal](assets/readme/final/matches_normal.jpg) | ![dark](assets/readme/final/matches_dark.jpg) | ![motion blur](assets/readme/final/matches_motion_blur.jpg) |
+
+| noise | fast motion |
+|---|---|
+| ![noise](assets/readme/final/matches_noise.jpg) | ![fast motion](assets/readme/final/matches_fast_motion.jpg) |
 
 ### Jetson dev container
 
