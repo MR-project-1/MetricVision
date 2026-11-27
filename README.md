@@ -1,5 +1,7 @@
 # MetricVision: stereo VO on the wheelchair, real time and simulation
 
+[![CI](https://github.com/MR-project-1/MetricVision/actions/workflows/ci.yml/badge.svg)](https://github.com/MR-project-1/MetricVision/actions/workflows/ci.yml)
+
 Stereo visual odometry for the wheelchair's two RealSense cameras: **live** as a ROS 2 (Humble) package (part 1)
 and **offline** on recorded bags and public datasets (part 2). Both compare two approaches on the same frames, with
 the same rigid-rig back end (the two cameras are one rigid
@@ -258,6 +260,23 @@ uses the same library; the commands below still work on this branch.
 | Monocular metric VO (left image + Depth Anything V2) | 116.5 m | 12.6% | 3.36°/100 m | 216.6 cm |
 
 t_rel and r_rel are the official KITTI devkit drift metrics (100-800 m segments); ATE is after SE(3) alignment, without scale.
+
+**Novel components.** Two modules go beyond a standard stereo VO:
+
+1. **Gated monocular metric depth priors in a stereo window BA** (RoMeO-style, adapted to stereo). Depth
+   Anything V2's depth is scale-aligned to stereo per keyframe. It then enters the BA as a prior only for weakly
+   triangulated landmarks where it agrees with stereo (green), with one prior per landmark per window and a trust
+   region on the update. [Details](#windowed-ba-and-monocular-depth-priors-poc).
+
+   ![Depth-prior gating per landmark](assets/readme/gating_kitti.jpg)
+
+2. **Dynamic and occluded points.** A class-agnostic geometric gate (Mahalanobis test of each new stereo point
+   against its fused landmark) is combined with a SegFormer semantic mask. Red ×: masked tracks; yellow ○: gated
+   tracks. [Details](#dynamic-scenes-moving-objects-and-occlusions).
+
+   ![Semantic mask and geometric gate on KITTI 07](assets/readme/dynamic_examples.jpg)
+
+On KITTI and EuRoC neither module beats windowed BA alone. The figures and tables below show why.
 
 **The front end.** FAST corners with ORB descriptors are matched only along epipolar lines, refined to
 sub-pixel disparity and triangulated with a first-order depth covariance:
@@ -591,11 +610,27 @@ What this shows:
 Two complementary, optional layers handle moving objects and occlusions:
 
 * **Geometric gate** (`--dynamic-gate`, sparse pipeline, no network). Before a new stereo observation is fused
-  into a track's landmark, a 3σ Mahalanobis test checks it against the landmark's covariance. Points on moving
-  objects, or tracks that jumped onto an occluder, fail and are dropped. It is class-agnostic and free.
+  into a track's landmark, a Mahalanobis test checks it against the landmark's covariance
+  (d² = Δᵀ(Σ_landmark + Σ_new)⁻¹Δ < χ²(3 dof, 99.9%) = 16.27). Points on moving objects, or tracks that slid onto
+  an occluder, fail and are dropped. It is class-agnostic and costs one 3×3 inverse per track.
 * **Semantic mask** (`--dynamic-mask`, both pipelines). SegFormer-B0 trained on Cityscapes (~170 MiB VRAM, ~14 ms)
   masks people, riders, cars, trucks, buses and bikes. No features are detected or tracked there, and matches
   landing on them are dropped.
+
+**What each layer removes** (KITTI 07, sparse pipeline with gate and mask). Magenta: SegFormer mask; green:
+tracks kept for pose estimation; red ×: dropped by the mask; yellow ○: dropped by the geometric gate.
+
+![Semantic mask and geometric gate on four KITTI 07 frames](assets/readme/dynamic_examples.jpg)
+
+* Frame 639: the crossing truck is masked. Few tracks reach it, because no features are detected inside the mask.
+* Frame 438: the cyclist is masked, but so are the hedges on the right. This false positive removes static points.
+* Frames 42 and 750: rows of *parked* cars are masked.
+* The gate fires on isolated points at kerbs and edges, where tracks slide at occlusion boundaries.
+
+```bash
+uv run python scripts/make_dynamic_examples.py --kitti ~/datasets/kitti --sequence 07 \
+  --frames 639 438 42 750 --out assets/readme/dynamic_examples.jpg   # SegFormer on the CPU by default (low memory)
+```
 
 Evaluated on KITTI 00 and on **KITTI 07** (busy streets and intersections):
 
@@ -604,7 +639,7 @@ Evaluated on KITTI 00 and on **KITTI 07** (busy streets and intersections):
 | | KITTI 00 ATE | KITTI 07 ATE | KITTI 07 t_rel | Removed per frame |
 |---|---|---|---|---|
 | Dense ORB | 8.97 m | 4.60 m | 2.40% | – |
-| Dense ORB + semantic mask | 22.16 m | 5.99 m | 2.74% | ~150 matches |
+| Dense ORB + semantic mask | 22.16 m | 5.99 m | 2.74% | ~158 matches |
 | Sparse + windowed BA | 6.33 m | 2.53 m | 1.35% | – |
 | + geometric gate | 6.76 m | 2.52 m | 1.36% | ~3 tracks |
 | + semantic mask | 6.26 m | 2.69 m | 1.42% | ~3.5 tracks |
