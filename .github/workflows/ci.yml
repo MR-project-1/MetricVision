@@ -1,0 +1,47 @@
+# Continuous integration: lint, format check, type check and the test suite on every push to main and every PR.
+# The tests need no datasets, GPU or the optional `learned` extra (PyTorch): they run on a synthetic sequence and
+# fake dataset folders, so CI installs only the base dependencies plus the dev group, exactly as pinned in uv.lock.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:  # Manual runs from the Actions tab.
+
+concurrency:  # A newer push to the same branch or PR cancels the older run.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Lint, types and tests (Python 3.10)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv and Python 3.10
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.10"  # Pinned to match ROS 2 Humble and JetPack 6.
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install dependencies (base + dev group, from uv.lock)
+        run: uv sync --all-groups --frozen
+
+      - name: Ruff lint
+        run: uv run --frozen ruff check src tests
+
+      - name: Ruff format check
+        run: uv run --frozen ruff format --check src tests
+
+      - name: Mypy
+        run: uv run --frozen mypy src
+
+      - name: Pytest
+        run: uv run --frozen pytest -q
